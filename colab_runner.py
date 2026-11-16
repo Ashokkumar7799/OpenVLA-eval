@@ -27,6 +27,10 @@ try:
     for attr in ["PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"]:
         if not hasattr(transformers.tokenization_utils, attr) and hasattr(transformers.tokenization_utils_base, attr):
             setattr(transformers.tokenization_utils, attr, getattr(transformers.tokenization_utils_base, attr))
+    
+    # Global PreTrainedModel patch for SDPA compatibility across all submodules
+    import transformers.modeling_utils
+    transformers.modeling_utils.PreTrainedModel._supports_sdpa = True
 except Exception:
     pass
 
@@ -193,7 +197,8 @@ class OpenVLAEngine:
                 model_name,
                 quantization_config=quant_config,
                 low_cpu_mem_usage=True,
-                trust_remote_code=True
+                trust_remote_code=True,
+                attn_implementation="eager"
             )
         else:
             dtype = torch.bfloat16 if device == "cuda" else torch.float32
@@ -201,7 +206,8 @@ class OpenVLAEngine:
                 model_name,
                 torch_dtype=dtype,
                 low_cpu_mem_usage=True,
-                trust_remote_code=True
+                trust_remote_code=True,
+                attn_implementation="eager"
             ).to(device)
 
         print("✨ OpenVLA foundation model successfully loaded into memory!")
@@ -345,6 +351,8 @@ def main():
         try:
             model_engine = OpenVLAEngine(load_in_4bit=True, device="cuda")
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"⚠️ Warning: Could not initialize OpenVLA-7B ({e}). Running baseline physics rollout.")
             model_engine = None
 
