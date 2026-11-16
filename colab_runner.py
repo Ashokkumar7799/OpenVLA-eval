@@ -175,6 +175,14 @@ class OpenVLAEngine:
             except ImportError:
                 from transformers import AutoModel as ModelClass
 
+        # Patch missing modern transformers attributes onto OpenVLA model class
+        if not hasattr(ModelClass, "_supports_sdpa"):
+            ModelClass._supports_sdpa = True
+        if not hasattr(ModelClass, "_supports_flash_attn_2"):
+            ModelClass._supports_flash_attn_2 = False
+        if not hasattr(ModelClass, "_supports_cache_class"):
+            ModelClass._supports_cache_class = False
+
         if device == "cuda" and load_in_4bit:
             quant_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -251,13 +259,20 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices):
             pred_actions = np.zeros_like(gt_actions)
         else:
             # OpenVLA model predictions
+            import io
             pred_actions = []
             for _, row in ep_data.iterrows():
-                img = row.get("observation.images.cam_high", None)
-                if img is not None and isinstance(img, np.ndarray):
-                    act = model_engine.predict_action(img)
+                raw_img = row.get("observation.images.cam_high", None)
+                if isinstance(raw_img, dict) and "bytes" in raw_img:
+                    img_np = np.array(Image.open(io.BytesIO(raw_img["bytes"])))
+                    act = model_engine.predict_action(img_np)
+                elif isinstance(raw_img, np.ndarray):
+                    act = model_engine.predict_action(raw_img)
+                elif hasattr(raw_img, "convert"):
+                    act = model_engine.predict_action(np.array(raw_img))
                 else:
-                    act = np.zeros(14, dtype=np.float32)
+                    img_np = np.zeros((480, 640, 3), dtype=np.uint8)
+                    act = model_engine.predict_action(img_np)
                 pred_actions.append(parse_action_row(act))
             pred_actions = np.stack(pred_actions, axis=0)
 
