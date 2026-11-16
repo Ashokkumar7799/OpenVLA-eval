@@ -4,10 +4,9 @@ OpenVLA Aloha Evaluation & Fine-Tuning Engine (Google Colab / Cloud GPU Runner)
 This script runs on a GPU-enabled Google Colab instance (e.g. L4, A100, or T4).
 It performs:
   1. Automated LeRobot ALOHA dataset download from Hugging Face.
-  2. Zero-Shot OpenVLA-7B Action Inference on the 15 Test Episodes.
+  2. Zero-Shot OpenVLA-7B Action Inference on the Holdout Test Episodes.
   3. Headless MuJoCo Physical Simulation & Success Rate Evaluation.
-  4. LoRA Parameter-Efficient Fine-Tuning (PEFT) on the 30 Training Episodes.
-  5. Post-Finetuning Physical Evaluation & Comparative Benchmark Export.
+  4. Benchmark scorecard generation (Task Success Rate, Peak Lift, L1 Error).
 """
 
 import os
@@ -19,7 +18,13 @@ import argparse
 import numpy as np
 import pandas as pd
 from PIL import Image
-import torch
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCENE_XML = os.path.join(SCRIPT_DIR, "mujoco_menagerie", "aloha", "scene_with_screwdriver.xml")
@@ -27,8 +32,8 @@ SPLITS_JSON = os.path.join(SCRIPT_DIR, "dataset_splits.json")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="OpenVLA ALOHA Colab Engine")
-    parser.add_argument("--mode", choices=["zero_shot", "finetune", "full_pipeline"], default="full_pipeline",
-                        help="Execution mode: zero_shot baseline, finetune LoRA, or full_pipeline")
+    parser.add_argument("--mode", choices=["baseline", "zero_shot", "finetune", "full_pipeline"], default="baseline",
+                        help="Execution mode: baseline (fast physics evaluation), zero_shot (loads OpenVLA-7B), or full_pipeline")
     parser.add_argument("--test_limit", type=int, default=5, help="Number of test episodes to evaluate (default: 5)")
     parser.add_argument("--epochs", type=int, default=5, help="Number of fine-tuning epochs")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
@@ -127,7 +132,13 @@ def download_dataset(hf_token=None):
     parquet_files = glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True)
     if not parquet_files:
         raise FileNotFoundError(f"No parquet files found in {repo_dir}")
-    df = pd.concat([pd.read_parquet(p) for p in parquet_files], ignore_index=True)
+    
+    # Load all parquet chunks
+    dfs = []
+    for p in parquet_files:
+        dfs.append(pd.read_parquet(p))
+    df = pd.concat(dfs, ignore_index=True)
+    print(f"📊 Loaded {len(df):,} total frames across {df['episode_index'].nunique()} episodes.")
     return df
 
 # ==============================================================================
@@ -179,37 +190,93 @@ class OpenVLAEngine:
 # ==============================================================================
 # 4. Evaluation Routine
 # ==============================================================================
+def parse_action_row(act):
+    """Robustly parse single action entry into a 14-dim numpy float array."""
+    if act is None:
+        return np.zeros(14, dtype=np.float32)
+    if isinstance(act, (list, tuple, np.ndarray)):
+        arr = np.array(act, dtype=np.float32).flatten()
+        if len(arr) == 14:
+            return arr
+        elif len(arr) > 0:
+            out = np.zeros(14, dtype=np.float32)
+            n = min(14, len(arr))
+            out[:n] = arr[:n]
+            return out
+    return np.zeros(14, dtype=np.float32)
+
 def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices):
     print(f"\n🔬 Evaluating across {len(episode_indices)} Holdout Episodes...")
     results = []
     
     for ep_id in episode_indices:
         ep_data = df[df["episode_index"] == ep_id].sort_values("frame_index")
-        gt_actions = np.array([r["action"] for _, r in ep_data.iterrows()], dtype=np.float32)
-        init_state = np.array(ep_data["observation.state"].iloc[0], dtype=np.float32)
+        
+        # Robustly parse action sequence
+        actions_list = [parse_action_row(r["action"]) for _, r in ep_data.iterrows()]
+        if not actions_list:
+            continue
+        gt_actions = np.stack(actions_list, axis=0)
+        
+        # Robustly parse initial joint state
+        raw_state = ep_data["observation.state"].iloc[0]
+        init_state = parse_action_row(raw_state)
 
-        predicted_actions = []
-        for idx, row in ep_data.iterrows():
-            # In zero-shot baseline across ALOHA
-            act = np.zeros(14, dtype=np.float32)
-            predicted_actions.append(act)
+        # Baseline evaluation rollout
+        if model_engine is None:
+            # Baseline: Zero-action static or human reference comparison
+            pred_actions = np.zeros_like(gt_actions)
+        else:
+            # OpenVLA model predictions
+            pred_actions = []
+            for _, row in ep_data.iterrows():
+                img = row.get("observation.images.cam_high", None)
+                if img is not None and isinstance(img, np.ndarray):
+                    act = model_engine.predict_action(img)
+                else:
+                    act = np.zeros(14, dtype=np.float32)
+                pred_actions.append(parse_action_row(act))
+            pred_actions = np.stack(pred_actions, axis=0)
 
-        predicted_actions = np.array(predicted_actions, dtype=np.float32)
-        l1_error = float(np.mean(np.abs(predicted_actions - gt_actions)))
+        l1_error = float(np.mean(np.abs(pred_actions - gt_actions)))
 
-        rollout = run_simulation_rollout(mj_model, mj_data, predicted_actions, init_state)
+        # Physical rollout in MuJoCo
+        rollout = run_simulation_rollout(mj_model, mj_data, pred_actions, init_state)
+        
+        # Human reference rollout for comparison
+        gt_rollout = run_simulation_rollout(mj_model, mj_data, gt_actions, init_state)
+
         results.append({
             "episode_id": ep_id,
             "success": rollout["success"],
             "peak_lift_cm": rollout["peak_lift_cm"],
-            "l1_error_rad": round(l1_error, 4)
+            "l1_error_rad": round(l1_error, 4),
+            "human_reference": {
+                "success": gt_rollout["success"],
+                "peak_lift_cm": gt_rollout["peak_lift_cm"]
+            }
         })
-        print(f"  • Episode {ep_id:2d}: Success={rollout['success']} | Peak Lift={rollout['peak_lift_cm']:.2f}cm | L1 Error={l1_error:.4f} rad")
+        print(f"  • Episode {ep_id:2d}: Success={rollout['success']} | Peak Lift={rollout['peak_lift_cm']:.2f}cm | Human Ref Lift={gt_rollout['peak_lift_cm']:.2f}cm | L1 Error={l1_error:.4f} rad")
 
     success_rate = (sum(1 for r in results if r["success"]) / len(results)) * 100.0
+    ref_success_rate = (sum(1 for r in results if r["human_reference"]["success"]) / len(results)) * 100.0
     mean_l1 = float(np.mean([r["l1_error_rad"] for r in results]))
-    print(f"\n📊 Summary: Success Rate = {success_rate:.1f}% | Mean L1 Error = {mean_l1:.4f} rad")
-    return {"success_rate_pct": success_rate, "mean_l1_error_rad": mean_l1, "episodes": results}
+    
+    print("\n" + "=" * 70)
+    print("📊 HOLD-OUT TEST RESULTS SCORECARD")
+    print("=" * 70)
+    print(f"• Evaluated Episodes       : {len(results)}")
+    print(f"• Policy Success Rate      : {success_rate:.1f}%")
+    print(f"• Human Expert Success Rate: {ref_success_rate:.1f}%")
+    print(f"• Mean L1 Action Error     : {mean_l1:.4f} rad")
+    print("=" * 70)
+
+    return {
+        "success_rate_pct": success_rate,
+        "human_expert_success_rate_pct": ref_success_rate,
+        "mean_l1_error_rad": mean_l1,
+        "episodes": results
+    }
 
 def main():
     args = parse_args()
@@ -217,8 +284,10 @@ def main():
     print("🤖 PHYSICAL AI: OPENVLA 7B ALOHA ZERO-SHOT & FINE-TUNING PIPELINE")
     print("=" * 80)
 
+    # Initialize MuJoCo
     mj_model, mj_data = init_mujoco()
 
+    # Load splits
     with open(SPLITS_JSON, "r") as f:
         splits = json.load(f)["splits"]
     test_eps = splits["test"]["episodes"][:args.test_limit]
@@ -226,17 +295,28 @@ def main():
 
     print(f"📂 Evaluating {len(test_eps)} Test Episodes ({test_eps[0]} to {test_eps[-1]}).")
 
+    # Download / Load dataset
     df = download_dataset(args.hf_token)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if (TORCH_AVAILABLE and torch.cuda.is_available()) else "cpu"
     print(f"🖥️ Execution Device: {device.upper()}")
 
-    eval_summary = evaluate_episodes(None, mj_model, mj_data, df, test_eps)
+    # Initialize model if zero_shot or full_pipeline mode
+    model_engine = None
+    if args.mode in ["zero_shot", "full_pipeline"] and TORCH_AVAILABLE and torch.cuda.is_available():
+        try:
+            model_engine = OpenVLAEngine(load_in_4bit=True, device="cuda")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not initialize OpenVLA-7B ({e}). Running baseline physics rollout.")
+            model_engine = None
+
+    eval_summary = evaluate_episodes(model_engine, mj_model, mj_data, df, test_eps)
 
     os.makedirs(args.output_dir, exist_ok=True)
     report_file = os.path.join(args.output_dir, "openvla_benchmark_results.json")
 
     report = {
+        "mode": args.mode,
         "device": device,
         "evaluation_summary": eval_summary,
         "test_episodes": test_eps,
