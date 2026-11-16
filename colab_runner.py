@@ -62,7 +62,15 @@ def parse_args():
 # 1. Physics Engine Setup (MuJoCo)
 # ==============================================================================
 def init_mujoco():
-    import mujoco
+    try:
+        import mujoco
+    except ImportError:
+        print("⚠️ Dependencies not detected. Auto-installing from requirements.txt...")
+        import subprocess
+        req_file = os.path.join(SCRIPT_DIR, "requirements.txt")
+        subprocess.run(["pip", "install", "-q", "-r", req_file], check=True)
+        import mujoco
+
     scene_path = SCENE_XML
     if not os.path.exists(scene_path):
         fallback = os.path.join(SCRIPT_DIR, "mujoco_menagerie", "aloha", "scene.xml")

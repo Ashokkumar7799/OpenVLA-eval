@@ -1,10 +1,13 @@
 # Physical AI Simulation, Rollout & Evaluation Stack
 mujoco>=3.1.0
-opencv-python>=4.8.0
-pandas>=2.0.0
-pyarrow>=14.0.0
-matplotlib>=3.7.0
-gradio>=4.0.0
-huggingface_hub>=0.20.0
-numpy>=1.24.0
-
+transformers>=4.40.1,<5.0.0
+timm==0.9.10
+accelerate
+bitsandbytes
+peft
+huggingface_hub
+mediapy
+opencv-python
+pandas
+pyarrow
+matplotlib
