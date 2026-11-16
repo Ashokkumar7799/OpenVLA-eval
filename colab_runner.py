@@ -19,11 +19,23 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+# --- OpenVLA Compatibility Layer for Transformers ---
+import transformers
+try:
+    import transformers.tokenization_utils
+    import transformers.tokenization_utils_base
+    for attr in ["PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"]:
+        if not hasattr(transformers.tokenization_utils, attr) and hasattr(transformers.tokenization_utils_base, attr):
+            setattr(transformers.tokenization_utils, attr, getattr(transformers.tokenization_utils_base, attr))
+except Exception:
+    pass
+
 try:
     import torch
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
