@@ -146,7 +146,15 @@ def download_dataset(hf_token=None):
 # ==============================================================================
 class OpenVLAEngine:
     def __init__(self, model_name="openvla/openvla-7b", load_in_4bit=True, device="cuda"):
-        from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
+        from transformers import AutoProcessor, BitsAndBytesConfig
+        try:
+            from transformers import AutoModelForVision2Seq as AutoVisionModel
+        except ImportError:
+            try:
+                from transformers import AutoModelForImageTextToText as AutoVisionModel
+            except ImportError:
+                from transformers import AutoModel as AutoVisionModel
+
         print(f"🤖 Initializing OpenVLA ({model_name}) on {device}...")
         
         self.device = device
@@ -158,7 +166,7 @@ class OpenVLAEngine:
                 bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_quant_type="nf4"
             )
-            self.model = AutoModelForVision2Seq.from_pretrained(
+            self.model = AutoVisionModel.from_pretrained(
                 model_name,
                 quantization_config=quant_config,
                 low_cpu_mem_usage=True,
@@ -166,7 +174,7 @@ class OpenVLAEngine:
             )
         else:
             dtype = torch.bfloat16 if device == "cuda" else torch.float32
-            self.model = AutoModelForVision2Seq.from_pretrained(
+            self.model = AutoVisionModel.from_pretrained(
                 model_name,
                 torch_dtype=dtype,
                 low_cpu_mem_usage=True,
