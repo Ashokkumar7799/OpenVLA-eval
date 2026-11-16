@@ -210,6 +210,15 @@ class OpenVLAEngine:
                 attn_implementation="eager"
             ).to(device)
 
+        # Restore GenerationMixin if stripped by modern transformers (>= 4.50)
+        if not hasattr(self.model, "generate"):
+            from transformers import GenerationMixin
+            self.model.__class__ = type(
+                self.model.__class__.__name__,
+                (self.model.__class__, GenerationMixin),
+                {}
+            )
+
         print("✨ OpenVLA foundation model successfully loaded into memory!")
 
     def predict_action(self, image_np, instruction="pick up the yellow screwdriver and place it into the blue cup"):
