@@ -219,6 +219,11 @@ class OpenVLAEngine:
                 {}
             )
 
+        # Ensure generation_config exists (required by GenerationMixin.generate())
+        if not hasattr(self.model, "generation_config") or self.model.generation_config is None:
+            from transformers import GenerationConfig
+            self.model.generation_config = GenerationConfig()
+
         print("✨ OpenVLA foundation model successfully loaded into memory!")
 
     def predict_action(self, image_np, instruction="pick up the yellow screwdriver and place it into the blue cup"):
