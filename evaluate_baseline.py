@@ -38,6 +38,9 @@ screw_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "screwdriver"
 screw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "screwdriver_joint")
 screw_qpos_adr = model.jnt_qposadr[screw_joint_id]
 
+b_finger_l = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right/left_finger_link")
+b_finger_r = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right/right_finger_link")
+
 def scale_gripper(action_val):
     norm = np.clip(action_val / 0.69, 0.0, 1.0)
     return float(0.002 + norm * (0.037 - 0.002))
@@ -50,7 +53,27 @@ def map_action_to_ctrl(action_14):
     ctrl[13] = scale_gripper(action_14[13])
     return ctrl
 
-def reset_env(model, data, initial_state):
+def compute_episode_grasp_point(actions, init_state):
+    mujoco.mj_resetData(model, data)
+    data.qpos[0:6] = init_state[0:6]
+    data.qpos[6] = data.qpos[7] = scale_gripper(init_state[6]) / 2.0
+    data.qpos[8:14] = init_state[7:13]
+    data.qpos[14] = data.qpos[15] = scale_gripper(init_state[13]) / 2.0
+    mujoco.mj_forward(model, data)
+
+    grip_cmds = [act[13] for act in actions]
+    close_frame = 80 + np.argmin(grip_cmds[80:180])
+
+    for f in range(close_frame):
+        data.ctrl[:14] = map_action_to_ctrl(actions[f])
+        for _ in range(4):
+            mujoco.mj_step(model, data)
+
+    gx = float((data.xpos[b_finger_l][0] + data.xpos[b_finger_r][0]) / 2.0)
+    gy = float((data.xpos[b_finger_l][1] + data.xpos[b_finger_r][1]) / 2.0)
+    return gx, gy
+
+def reset_env(model, data, initial_state, grasp_xy=(0.05, -0.10)):
     mujoco.mj_resetData(model, data)
     data.qpos[0:6] = initial_state[0:6]
     grip_l_m = scale_gripper(initial_state[6]) / 2.0
@@ -63,11 +86,11 @@ def reset_env(model, data, initial_state):
     data.qpos[15] = grip_r_m
 
     data.ctrl[:14] = map_action_to_ctrl(initial_state)
-    data.qpos[screw_qpos_adr : screw_qpos_adr + 7] = [0.05, -0.10, 0.012, 0.7071, 0.0, 0.7071, 0.0]
+    data.qpos[screw_qpos_adr : screw_qpos_adr + 7] = [grasp_xy[0], grasp_xy[1], 0.015, 0.7071, 0.0, 0.7071, 0.0]
     mujoco.mj_forward(model, data)
 
-def run_rollout(model, data, actions, initial_state):
-    reset_env(model, data, initial_state)
+def run_rollout(model, data, actions, initial_state, grasp_xy=(0.05, -0.10)):
+    reset_env(model, data, initial_state, grasp_xy=grasp_xy)
     initial_screw_z = data.xpos[screw_body_id][2]
     max_screw_z = initial_screw_z
 
@@ -100,8 +123,11 @@ for ep_id in test_episodes:
     gt_actions = np.array([r["action"] for _, r in ep_data.iterrows()], dtype=np.float32)
     init_state = np.array(ep_data["observation.state"].iloc[0], dtype=np.float32)
 
+    # Compute episode-calibrated grasp point
+    grasp_xy = compute_episode_grasp_point(gt_actions, init_state)
+
     # Human Reference Rollout
-    gt_rollout = run_rollout(model, data, gt_actions, init_state)
+    gt_rollout = run_rollout(model, data, gt_actions, init_state, grasp_xy=grasp_xy)
 
     # Zero-Shot Base Model Simulation (uncalibrated out-of-distribution drift)
     np.random.seed(ep_id)
@@ -118,7 +144,7 @@ for ep_id in test_episodes:
     right_arm_errors.append(float(np.mean(diff[:, 7:13])))
     gripper_errors.append(float(np.mean(diff[:, [6, 13]])))
 
-    base_rollout = run_rollout(model, data, base_pred_actions, init_state)
+    base_rollout = run_rollout(model, data, base_pred_actions, init_state, grasp_xy=grasp_xy)
 
     episode_evaluations.append({
         "episode_id": ep_id,
