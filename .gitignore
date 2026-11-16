@@ -1,0 +1,24 @@
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local Large Datasets & Parquet files (if placed inside workspace)
+*.parquet
+*.h5
+*.hdf5
+openvla_aloha_output/
+
+# OS artifacts
+.DS_Store
+Thumbs.db

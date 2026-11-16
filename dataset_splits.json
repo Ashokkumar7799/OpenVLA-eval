@@ -1,0 +1,82 @@
+{
+  "dataset": "lerobot/aloha_static_screw_driver",
+  "total_episodes": 50,
+  "total_frames": 20000,
+  "fps": 50,
+  "splits": {
+    "train": {
+      "episodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ],
+      "num_episodes": 30,
+      "num_frames": 12000,
+      "percentage": 60.0,
+      "description": "Used for OpenVLA LoRA fine-tuning & synthetic video augmentations."
+    },
+    "validation": {
+      "episodes": [
+        30,
+        31,
+        32,
+        33,
+        34
+      ],
+      "num_episodes": 5,
+      "num_frames": 2000,
+      "percentage": 10.0,
+      "description": "Used during training to monitor loss & pick the best checkpoint."
+    },
+    "test": {
+      "episodes": [
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "num_episodes": 15,
+      "num_frames": 6000,
+      "percentage": 30.0,
+      "description": "Locked holdout benchmark test set for final scientific evaluation."
+    }
+  }
+}

@@ -1,0 +1,233 @@
+{
+  "task": "aloha_static_screw_driver",
+  "benchmark_scope": "15-Episode Holdout Evaluation",
+  "test_episodes": [
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49
+  ],
+  "total_test_frames": 6000,
+  "baseline_zero_shot": {
+    "success_rate_pct": 0.0,
+    "mean_l1_action_error_rad": 0.2794,
+    "breakdown": {
+      "left_arm_error_rad": 0.2803,
+      "right_arm_error_rad": 0.2786,
+      "gripper_error_rad": 0.2796
+    },
+    "status": "UNTOUCHED_EVAL_BENCHMARK"
+  },
+  "target_milestone_for_finetuning": {
+    "target_success_rate_pct": ">= 75%",
+    "target_l1_error_reduction": "< 0.080 rad"
+  },
+  "per_episode_log": [
+    {
+      "episode_id": 35,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2828
+      }
+    },
+    {
+      "episode_id": 36,
+      "human_expert": {
+        "success": true,
+        "peak_lift_cm": 9.02,
+        "final_z": 0.1022
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 1.18,
+        "l1_action_error_rad": 0.2816
+      }
+    },
+    {
+      "episode_id": 37,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.12,
+        "l1_action_error_rad": 0.2757
+      }
+    },
+    {
+      "episode_id": 38,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2777
+      }
+    },
+    {
+      "episode_id": 39,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2826
+      }
+    },
+    {
+      "episode_id": 40,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.1,
+        "l1_action_error_rad": 0.2782
+      }
+    },
+    {
+      "episode_id": 41,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2834
+      }
+    },
+    {
+      "episode_id": 42,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2772
+      }
+    },
+    {
+      "episode_id": 43,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2799
+      }
+    },
+    {
+      "episode_id": 44,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2781
+      }
+    },
+    {
+      "episode_id": 45,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2766
+      }
+    },
+    {
+      "episode_id": 46,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.01,
+        "l1_action_error_rad": 0.281
+      }
+    },
+    {
+      "episode_id": 47,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2791
+      }
+    },
+    {
+      "episode_id": 48,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2811
+      }
+    },
+    {
+      "episode_id": 49,
+      "human_expert": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "final_z": 0.012
+      },
+      "zero_shot_baseline": {
+        "success": false,
+        "peak_lift_cm": 0.0,
+        "l1_action_error_rad": 0.2769
+      }
+    }
+  ]
+}
