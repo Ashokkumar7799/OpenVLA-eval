@@ -55,25 +55,88 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size (default: 4)")
     parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate (default: 2e-5)")
     parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank dimension (default: 32)")
+    parser.add_argument("--camera_mode", choices=["4cam", "cam_high"], default="4cam",
+                        help="Camera input mode: '4cam' (2x2 mosaic) or 'cam_high' (overhead only)")
     parser.add_argument("--output_dir", type=str, default="./openvla_aloha_output/model_a_raw_lora", help="Output adapter dir")
+    parser.add_argument("--cache_dir", type=str, default="./dataset_cache_4cam", help="Pre-extracted image cache directory")
     parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face token")
     return parser.parse_args()
 
 def download_dataset(hf_token=None):
     from huggingface_hub import snapshot_download
-    print("📥 Loading ALOHA Screwdriver dataset...")
+    print("📥 Loading ALOHA Screwdriver dataset (Parquets + 4-Camera Videos)...")
     token = hf_token or os.environ.get("HF_TOKEN", None)
     repo_dir = snapshot_download(
         repo_id="lerobot/aloha_static_screw_driver",
         repo_type="dataset",
-        allow_patterns=["*.parquet", "*.json", "meta/**"],
+        allow_patterns=["*.parquet", "*.json", "meta/**", "videos/**"],
         token=token
     )
     parquet_files = glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True)
     dfs = [pd.read_parquet(p) for p in parquet_files]
     df = pd.concat(dfs, ignore_index=True)
     print(f"📊 Dataset ready: {len(df):,} total frames across {df['episode_index'].nunique()} episodes.")
-    return df
+    return df, repo_dir
+
+def prepare_image_cache(repo_dir, train_episodes, cache_dir="./dataset_cache_4cam", mode="4cam"):
+    import cv2
+    os.makedirs(cache_dir, exist_ok=True)
+    expected_frames = len(train_episodes) * 400
+
+    existing = len(glob.glob(os.path.join(cache_dir, "*.jpg")))
+    if existing >= expected_frames:
+        print(f"⚡ Found {existing:,} pre-cached images in {cache_dir}. Skipping extraction.")
+        return cache_dir
+
+    print(f"🎬 Pre-decoding {expected_frames:,} {mode} frames into {cache_dir}...")
+    def _find_vid(name):
+        res = glob.glob(os.path.join(repo_dir, "**", f"*{name}*", "**", "*.mp4"), recursive=True)
+        if not res:
+            raise FileNotFoundError(f"Video stream '{name}' not found in {repo_dir}/videos")
+        return res[0]
+
+    cap_h = cv2.VideoCapture(_find_vid("cam_high"))
+    cap_l = cv2.VideoCapture(_find_vid("cam_low")) if mode == "4cam" else None
+    cap_lw = cv2.VideoCapture(_find_vid("cam_left_wrist")) if mode == "4cam" else None
+    cap_rw = cv2.VideoCapture(_find_vid("cam_right_wrist")) if mode == "4cam" else None
+
+    for ep_id in tqdm(train_episodes, desc=f"  Extracting {mode} Episodes"):
+        start_frame = ep_id * 400
+        cap_h.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        if mode == "4cam":
+            cap_l.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            cap_lw.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            cap_rw.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        for f_offset in range(400):
+            abs_idx = start_frame + f_offset
+            save_path = os.path.join(cache_dir, f"frame_{abs_idx:06d}.jpg")
+            if os.path.exists(save_path):
+                continue
+
+            _, fh = cap_h.read()
+            if fh is None:
+                raise RuntimeError(f"Corrupted cam_high frame at absolute index {abs_idx}")
+
+            if mode == "cam_high":
+                cv2.imwrite(save_path, fh, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            else:
+                _, fl = cap_l.read()
+                _, flw = cap_lw.read()
+                _, frw = cap_rw.read()
+                if fl is None or flw is None or frw is None:
+                    raise RuntimeError(f"Corrupted wrist/low camera frame at index {abs_idx}")
+                top = np.hstack([cv2.resize(fh, (320, 240)), cv2.resize(fl, (320, 240))])
+                bot = np.hstack([cv2.resize(flw, (320, 240)), cv2.resize(frw, (320, 240))])
+                grid = np.vstack([top, bot])
+                cv2.imwrite(save_path, grid, [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+    cap_h.release()
+    if cap_l: cap_l.release()
+    if cap_lw: cap_lw.release()
+    if cap_rw: cap_rw.release()
+    print(f"✅ Successfully cached {expected_frames:,} images in {cache_dir}!")
+    return cache_dir
 
 def actions_to_tokens(action_14, vocab_size=32000, num_bins=256):
     """Normalizes 14 continuous joint values to 256 discrete bins and maps to action token IDs."""
@@ -84,39 +147,33 @@ def actions_to_tokens(action_14, vocab_size=32000, num_bins=256):
     return action_token_ids.tolist()
 
 class AlohaDataset(Dataset):
-    def __init__(self, df, train_episodes, processor):
+    def __init__(self, df, train_episodes, cache_dir, processor):
         self.samples = []
+        self.cache_dir = cache_dir
         train_df = df[df["episode_index"].isin(train_episodes)].sort_values(["episode_index", "frame_index"])
         
         for _, row in train_df.iterrows():
             act = row["action"]
             if act is not None and hasattr(act, "__len__") and len(act) == 14:
+                abs_idx = int(row["index"])
+                img_path = os.path.join(cache_dir, f"frame_{abs_idx:06d}.jpg")
+                if not os.path.exists(img_path):
+                    raise FileNotFoundError(f"Missing image for training at {img_path}")
                 self.samples.append({
                     "action": np.array(act, dtype=np.float32),
-                    "image": row.get("observation.images.cam_high", None)
+                    "img_path": img_path
                 })
         
         self.processor = processor
         self.prompt = "In: What action should the robot take to pick up the yellow screwdriver and place it into the blue cup?\nOut:"
-        print(f"✅ Prepared {len(self.samples):,} training steps across {len(train_episodes)} episodes.")
+        print(f"✅ Prepared {len(self.samples):,} verified training samples across {len(train_episodes)} episodes.")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         item = self.samples[idx]
-        raw_img = item["image"]
-        
-        if isinstance(raw_img, dict) and "bytes" in raw_img:
-            import io
-            image = Image.open(io.BytesIO(raw_img["bytes"])).convert("RGB")
-        elif isinstance(raw_img, np.ndarray):
-            image = Image.fromarray(raw_img).convert("RGB")
-        elif hasattr(raw_img, "convert"):
-            image = raw_img.convert("RGB")
-        else:
-            image = Image.new("RGB", (480, 640), (0, 0, 0))
-
+        image = Image.open(item["img_path"]).convert("RGB")
         action_tokens = actions_to_tokens(item["action"])
         return image, self.prompt, action_tokens
 
@@ -157,9 +214,12 @@ def main():
     print(f"📂 Loaded 30 Training Episodes ({train_eps[0]} to {train_eps[-1]}).")
 
     # 2. Download Dataset
-    df = download_dataset(args.hf_token)
+    df, repo_dir = download_dataset(args.hf_token)
 
-    # 3. Initialize OpenVLA Processor & 4-bit Quantized Base Model
+    # 3. Cache and verify real camera vision frames
+    cache_dir = prepare_image_cache(repo_dir, train_eps, cache_dir=args.cache_dir, mode=args.camera_mode)
+
+    # 4. Initialize OpenVLA Processor & 4-bit Quantized Base Model
     print("🤖 Initializing OpenVLA Foundation Model in 4-bit...")
     from transformers import AutoProcessor, BitsAndBytesConfig
     from transformers.dynamic_module_utils import get_class_from_dynamic_module
@@ -213,7 +273,7 @@ def main():
     model.print_trainable_parameters()
 
     # 5. Dataset & DataLoader
-    dataset = AlohaDataset(df, train_eps, processor)
+    dataset = AlohaDataset(df, train_eps, cache_dir, processor)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,

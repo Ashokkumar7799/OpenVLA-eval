@@ -76,6 +76,8 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
     parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank adaptation dimension")
     parser.add_argument("--output_dir", type=str, default="./openvla_aloha_output", help="Directory for artifacts")
+    parser.add_argument("--camera_mode", choices=["4cam", "cam_high"], default="4cam",
+                        help="Camera input mode: '4cam' (2x2 mosaic) or 'cam_high' (overhead only)")
     parser.add_argument("--save_video", action="store_true", help="Record and save MP4 rollout videos of evaluated episodes")
     parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face API token if needed")
     return parser.parse_args()
@@ -216,16 +218,16 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state, gr
     }
 
 # ==============================================================================
-# 2. Dataset Downloader & Loader
+# 2. Dataset Downloader & Multi-Camera Video Reader
 # ==============================================================================
 def download_dataset(hf_token=None):
     from huggingface_hub import snapshot_download
-    print("📥 Checking / Downloading ALOHA Screwdriver dataset from Hugging Face...")
+    print("📥 Checking / Downloading ALOHA Screwdriver dataset (Parquets + 4-Camera Videos)...")
     token = hf_token or os.environ.get("HF_TOKEN", None)
     repo_dir = snapshot_download(
         repo_id="lerobot/aloha_static_screw_driver",
         repo_type="dataset",
-        allow_patterns=["*.parquet", "*.json", "meta/**"],
+        allow_patterns=["*.parquet", "*.json", "meta/**", "videos/**"],
         token=token
     )
     print(f"✅ Dataset cached at: {repo_dir}")
@@ -239,7 +241,56 @@ def download_dataset(hf_token=None):
         dfs.append(pd.read_parquet(p))
     df = pd.concat(dfs, ignore_index=True)
     print(f"📊 Loaded {len(df):,} total frames across {df['episode_index'].nunique()} episodes.")
-    return df
+    return df, repo_dir
+
+class MultiCamEpisodeReader:
+    def __init__(self, repo_dir, mode="4cam"):
+        import cv2
+        self.mode = mode
+        def _find_vid(name):
+            res = glob.glob(os.path.join(repo_dir, "**", f"*{name}*", "**", "*.mp4"), recursive=True)
+            if not res:
+                raise FileNotFoundError(f"Video stream '{name}' not found in {repo_dir}/videos")
+            return res[0]
+
+        self.cap_h = cv2.VideoCapture(_find_vid("cam_high"))
+        self.cap_l = cv2.VideoCapture(_find_vid("cam_low")) if mode == "4cam" else None
+        self.cap_lw = cv2.VideoCapture(_find_vid("cam_left_wrist")) if mode == "4cam" else None
+        self.cap_rw = cv2.VideoCapture(_find_vid("cam_right_wrist")) if mode == "4cam" else None
+
+    def seek_episode(self, ep_id):
+        import cv2
+        start_frame = ep_id * 400
+        self.cap_h.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        if self.mode == "4cam":
+            self.cap_l.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            self.cap_lw.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            self.cap_rw.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    def read_next_frame(self):
+        import cv2
+        _, fh = self.cap_h.read()
+        if fh is None:
+            return None
+        if self.mode == "cam_high":
+            return cv2.cvtColor(fh, cv2.COLOR_BGR2RGB)
+        
+        _, fl = self.cap_l.read()
+        _, flw = self.cap_lw.read()
+        _, frw = self.cap_rw.read()
+        if fl is None or flw is None or frw is None:
+            return None
+        
+        top = np.hstack([cv2.resize(fh, (320, 240)), cv2.resize(fl, (320, 240))])
+        bot = np.hstack([cv2.resize(flw, (320, 240)), cv2.resize(frw, (320, 240))])
+        grid = np.vstack([top, bot])
+        return cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
+
+    def close(self):
+        self.cap_h.release()
+        if self.cap_l: self.cap_l.release()
+        if self.cap_lw: self.cap_lw.release()
+        if self.cap_rw: self.cap_rw.release()
 
 # ==============================================================================
 # 3. OpenVLA Model Wrapper
@@ -363,7 +414,7 @@ def parse_action_row(act):
             return out
     return np.zeros(14, dtype=np.float32)
 
-def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, save_video=False, output_dir="./openvla_aloha_output"):
+def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, multi_cam_reader=None, save_video=False, output_dir="./openvla_aloha_output"):
     print(f"\n🔬 Evaluating across {len(episode_indices)} Holdout Episodes...")
     results = []
     all_predictions = {}
@@ -389,20 +440,27 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, save
             # OpenVLA model predictions
             import io
             from tqdm import tqdm
+            if multi_cam_reader is not None:
+                multi_cam_reader.seek_episode(ep_id)
+
             pred_actions = []
-            frame_pbar = tqdm(ep_data.iterrows(), total=len(ep_data), desc=f"  🎬 Ep {ep_id} Rollout", leave=False)
+            frame_pbar = tqdm(ep_data.iterrows(), total=len(ep_data), desc=f"  🎬 Ep {ep_id} Rollout (4-Cam Vision)", leave=False)
             for _, row in frame_pbar:
-                raw_img = row.get("observation.images.cam_high", None)
-                if isinstance(raw_img, dict) and "bytes" in raw_img:
-                    img_np = np.array(Image.open(io.BytesIO(raw_img["bytes"])))
-                    act = model_engine.predict_action(img_np)
-                elif isinstance(raw_img, np.ndarray):
-                    act = model_engine.predict_action(raw_img)
-                elif hasattr(raw_img, "convert"):
-                    act = model_engine.predict_action(np.array(raw_img))
+                if multi_cam_reader is not None:
+                    img_np = multi_cam_reader.read_next_frame()
+                    if img_np is None:
+                        raise RuntimeError(f"Error reading 4-camera video frame for episode {ep_id}")
                 else:
-                    img_np = np.zeros((480, 640, 3), dtype=np.uint8)
-                    act = model_engine.predict_action(img_np)
+                    raw_img = row.get("observation.images.cam_high", None)
+                    if isinstance(raw_img, dict) and "bytes" in raw_img:
+                        img_np = np.array(Image.open(io.BytesIO(raw_img["bytes"])))
+                    elif isinstance(raw_img, np.ndarray):
+                        img_np = raw_img
+                    elif hasattr(raw_img, "convert"):
+                        img_np = np.array(raw_img)
+                    else:
+                        raise ValueError(f"No valid image found for episode {ep_id} and multi_cam_reader is None")
+                act = model_engine.predict_action(img_np)
                 pred_actions.append(parse_action_row(act))
             pred_actions = np.stack(pred_actions, axis=0)
 
@@ -501,7 +559,8 @@ def main():
     print(f"📂 Evaluating {len(test_eps)} Test Episodes ({test_eps[0]} to {test_eps[-1]}).")
 
     # Download / Load dataset
-    df = download_dataset(args.hf_token)
+    df, repo_dir = download_dataset(args.hf_token)
+    multi_cam_reader = MultiCamEpisodeReader(repo_dir, mode=args.camera_mode)
 
     device = "cuda" if (TORCH_AVAILABLE and torch.cuda.is_available()) else "cpu"
     print(f"🖥️ Execution Device: {device.upper()}")
@@ -518,7 +577,13 @@ def main():
             print(f"⚠️ Warning: Could not initialize OpenVLA-7B ({e}). Running baseline physics rollout.")
             model_engine = None
 
-    eval_summary = evaluate_episodes(model_engine, mj_model, mj_data, df, test_eps, save_video=args.save_video, output_dir=args.output_dir)
+    eval_summary = evaluate_episodes(
+        model_engine, mj_model, mj_data, df, test_eps,
+        multi_cam_reader=multi_cam_reader,
+        save_video=args.save_video,
+        output_dir=args.output_dir
+    )
+    multi_cam_reader.close()
 
     os.makedirs(args.output_dir, exist_ok=True)
     report_file = os.path.join(args.output_dir, "openvla_benchmark_results.json")
