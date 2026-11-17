@@ -46,12 +46,31 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCENE_XML = os.path.join(SCRIPT_DIR, "mujoco_menagerie", "aloha", "scene_with_screwdriver.xml")
 SPLITS_JSON = os.path.join(SCRIPT_DIR, "dataset_splits.json")
 
+ACTION_MIN = np.array([
+    -0.0276, -0.9986,  0.9311, -0.4126, -1.1950, -0.2286, -0.0092,
+    -0.2807, -0.9710, -0.0107, -0.1488, -0.9403, -0.3007, -0.0834
+], dtype=np.float32)
+
+ACTION_MAX = np.array([
+     0.5354,  0.0046,  1.3530,  0.1227, -0.3037,  0.4034,  0.7713,
+     0.2255,  0.5216,  1.1796,  0.1089,  0.7194,  0.3252,  0.7697
+], dtype=np.float32)
+
+def tokens_to_aloha_actions(action_tokens, vocab_size=32000, num_bins=256):
+    bins = np.array(action_tokens) - (vocab_size - num_bins)
+    bins = np.clip(bins, 0, num_bins - 1)
+    norm = (bins + 0.5) / float(num_bins)
+    actions_14 = ACTION_MIN + norm * (ACTION_MAX - ACTION_MIN)
+    return actions_14.astype(np.float32)
+
 def parse_args():
     parser = argparse.ArgumentParser(description="OpenVLA ALOHA Colab Engine")
-    parser.add_argument("--mode", choices=["baseline", "zero_shot", "finetune", "full_pipeline"], default="baseline",
-                        help="Execution mode: baseline (fast physics evaluation), zero_shot (loads OpenVLA-7B), or full_pipeline")
+    parser.add_argument("--mode", choices=["baseline", "zero_shot", "eval_lora", "finetune", "full_pipeline"], default="baseline",
+                        help="Execution mode: baseline, zero_shot, eval_lora (14-DoF fine-tuned), or full_pipeline")
+    parser.add_argument("--adapter_path", type=str, default="./openvla_aloha_output/model_a_raw_lora",
+                        help="Path to fine-tuned 14-DoF LoRA adapter directory")
     parser.add_argument("--test_limit", type=int, default=5, help="Number of test episodes to evaluate (default: 5)")
-    parser.add_argument("--epochs", type=int, default=5, help="Number of fine-tuning epochs")
+    parser.add_argument("--epochs", type=int, default=3, help="Number of fine-tuning epochs")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
     parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank adaptation dimension")
     parser.add_argument("--output_dir", type=str, default="./openvla_aloha_output", help="Directory for artifacts")
@@ -169,7 +188,7 @@ def download_dataset(hf_token=None):
 # 3. OpenVLA Model Wrapper
 # ==============================================================================
 class OpenVLAEngine:
-    def __init__(self, model_name="openvla/openvla-7b", load_in_4bit=True, device="cuda"):
+    def __init__(self, model_name="openvla/openvla-7b", load_in_4bit=True, device="cuda", adapter_path=None):
         from transformers import AutoProcessor, BitsAndBytesConfig
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
@@ -232,6 +251,14 @@ class OpenVLAEngine:
             from transformers import GenerationConfig
             self.model.generation_config = GenerationConfig()
 
+        self.is_lora_14dof = False
+        if adapter_path and os.path.exists(adapter_path):
+            print(f"📦 Loading fine-tuned 14-DoF LoRA adapter from {adapter_path}...")
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, adapter_path)
+            self.is_lora_14dof = True
+            print("✅ 14-DoF Bimanual ALOHA adapter active! Generating 14 bimanual motor actions directly.")
+
         print("✨ OpenVLA foundation model successfully loaded into memory!")
 
     def predict_action(self, image_np, instruction="pick up the yellow screwdriver and place it into the blue cup"):
@@ -240,7 +267,17 @@ class OpenVLAEngine:
         inputs = self.processor(prompt, image).to(self.device, dtype=torch.bfloat16)
         
         with torch.no_grad():
-            if hasattr(self.model, "predict_action"):
+            if self.is_lora_14dof:
+                # Autoregressively generate 14 action tokens for bimanual ALOHA
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=14,
+                    do_sample=False,
+                    pad_token_id=self.processor.tokenizer.pad_token_id
+                )
+                action_tokens = generated_ids[0, -14:].cpu().numpy()
+                action = tokens_to_aloha_actions(action_tokens)
+            elif hasattr(self.model, "predict_action"):
                 action = self.model.predict_action(**inputs, unnorm_key="bridge_orig", do_sample=False)
             else:
                 action = np.zeros(14, dtype=np.float32)
@@ -367,11 +404,12 @@ def main():
     device = "cuda" if (TORCH_AVAILABLE and torch.cuda.is_available()) else "cpu"
     print(f"🖥️ Execution Device: {device.upper()}")
 
-    # Initialize model if zero_shot or full_pipeline mode
+    # Initialize model if zero_shot, eval_lora, or full_pipeline mode
     model_engine = None
-    if args.mode in ["zero_shot", "full_pipeline"] and TORCH_AVAILABLE and torch.cuda.is_available():
+    if args.mode in ["zero_shot", "eval_lora", "full_pipeline"] and TORCH_AVAILABLE and torch.cuda.is_available():
         try:
-            model_engine = OpenVLAEngine(load_in_4bit=True, device="cuda")
+            adapter = args.adapter_path if args.mode == "eval_lora" else None
+            model_engine = OpenVLAEngine(load_in_4bit=True, device="cuda", adapter_path=adapter)
         except Exception as e:
             import traceback
             traceback.print_exc()
