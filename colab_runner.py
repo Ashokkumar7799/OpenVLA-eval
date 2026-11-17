@@ -388,8 +388,10 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, save
         else:
             # OpenVLA model predictions
             import io
+            from tqdm import tqdm
             pred_actions = []
-            for _, row in ep_data.iterrows():
+            frame_pbar = tqdm(ep_data.iterrows(), total=len(ep_data), desc=f"  🎬 Ep {ep_id} Rollout", leave=False)
+            for _, row in frame_pbar:
                 raw_img = row.get("observation.images.cam_high", None)
                 if isinstance(raw_img, dict) and "bytes" in raw_img:
                     img_np = np.array(Image.open(io.BytesIO(raw_img["bytes"])))
