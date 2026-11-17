@@ -421,21 +421,43 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, save
         # Human reference rollout for comparison
         gt_rollout = run_simulation_rollout(mj_model, mj_data, gt_actions, init_state, grasp_xy=grasp_xy)
 
-        results.append({
+        ep_result = {
             "episode_id": ep_id,
             "lift_success": rollout["lift_success"],
             "landed_in_cup": rollout["landed_in_cup"],
             "peak_lift_cm": rollout["peak_lift_cm"],
             "dist_to_cup_cm": rollout["dist_to_cup_cm"],
             "l1_error_rad": round(l1_error, 4),
+            "video_path": v_path if (save_video and v_path and os.path.exists(v_path)) else None,
             "human_reference": {
                 "lift_success": gt_rollout["lift_success"],
                 "landed_in_cup": gt_rollout["landed_in_cup"],
                 "peak_lift_cm": gt_rollout["peak_lift_cm"],
                 "dist_to_cup_cm": gt_rollout["dist_to_cup_cm"]
             }
-        })
+        }
+        results.append(ep_result)
         print(f"  • Episode {ep_id:2d}: Lift={rollout['lift_success']} ({rollout['peak_lift_cm']:.1f}cm) | Cup={rollout['landed_in_cup']} (dist {rollout['dist_to_cup_cm']:.1f}cm) | Human Lift={gt_rollout['peak_lift_cm']:.1f}cm Cup={gt_rollout['landed_in_cup']} | L1 Error={l1_error:.4f} rad")
+        if v_path and os.path.exists(v_path):
+            print(f"  🎬 Episode {ep_id} video ready: {v_path}")
+
+        # Incremental auto-save so intermediate scorecard is always up to date on disk
+        interim_report_file = os.path.join(output_dir, "openvla_benchmark_results.json")
+        try:
+            curr_lift = (sum(1 for r in results if r["lift_success"]) / len(results)) * 100.0
+            curr_cup = (sum(1 for r in results if r["landed_in_cup"]) / len(results)) * 100.0
+            curr_l1 = float(np.mean([r["l1_error_rad"] for r in results]))
+            with open(interim_report_file, "w") as f:
+                json.dump({
+                    "status": "in_progress",
+                    "episodes_completed": len(results),
+                    "current_lift_rate_pct": round(curr_lift, 1),
+                    "current_cup_rate_pct": round(curr_cup, 1),
+                    "current_mean_l1_error": round(curr_l1, 4),
+                    "episodes": results
+                }, f, indent=2)
+        except Exception:
+            pass
 
     lift_rate = (sum(1 for r in results if r["lift_success"]) / len(results)) * 100.0
     cup_rate = (sum(1 for r in results if r["landed_in_cup"]) / len(results)) * 100.0
