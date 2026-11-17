@@ -128,11 +128,13 @@ def collate_fn(batch, processor):
     
     # Target label masking: mask prompt tokens with -100, calculate loss only on the 14 action tokens
     input_ids = inputs["input_ids"]
-    labels = input_ids.clone()
-    
-    # Append the 14 action token targets
     action_tensor = torch.tensor(action_tokens_list, dtype=torch.long)
     full_input_ids = torch.cat([input_ids, action_tensor], dim=1)
+    
+    # Keep attention mask consistent with expanded input_ids
+    if "attention_mask" in inputs and inputs["attention_mask"] is not None:
+        action_mask = torch.ones_like(action_tensor)
+        inputs["attention_mask"] = torch.cat([inputs["attention_mask"], action_mask], dim=1)
     
     # Mask prompt positions
     labels_masked = torch.full_like(input_ids, -100)
@@ -161,7 +163,7 @@ def main():
     print("🤖 Initializing OpenVLA Foundation Model in 4-bit...")
     from transformers import AutoProcessor, BitsAndBytesConfig
     from transformers.dynamic_module_utils import get_class_from_dynamic_module
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
     MODEL_ID = "openvla/openvla-7b"
     processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
@@ -187,6 +189,11 @@ def main():
 
     # 4. Attach LoRA Adapter for 14-DoF Bimanual Joint Prediction
     print(f"\n⚙️ Attaching LoRA Adapter (Rank={args.lora_rank}, Alpha={args.lora_rank*2})...")
+    try:
+        base_model = prepare_model_for_kbit_training(base_model, use_gradient_checkpointing=False)
+    except Exception as e:
+        print(f"Note on kbit preparation: {e}")
+
     lora_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=args.lora_rank * 2,
@@ -217,7 +224,16 @@ def main():
         epoch_loss = 0.0
         pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{args.epochs}")
         for step, batch in enumerate(pbar):
-            batch = {k: v.to("cuda") if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            device_batch = {}
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    if torch.is_floating_point(v):
+                        device_batch[k] = v.to("cuda", dtype=torch.bfloat16)
+                    else:
+                        device_batch[k] = v.to("cuda")
+                else:
+                    device_batch[k] = v
+            batch = device_batch
             
             optimizer.zero_grad()
             outputs = model(**batch)
