@@ -115,10 +115,34 @@ def map_action_to_ctrl(action_14):
     ctrl[13] = scale_gripper(action_14[13])
     return ctrl
 
-def run_simulation_rollout(model, data, action_sequence, initial_joint_state):
+def compute_episode_grasp_point(model, data, actions):
+    import mujoco
+    b_finger_l = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right/left_finger_link")
+    b_finger_r = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right/right_finger_link")
+    z_list = []
+    pos_list = []
+    for f in range(min(220, len(actions))):
+        act = actions[f]
+        data.qpos[0:6] = act[0:6]
+        data.qpos[6] = data.qpos[7] = scale_gripper(act[6]) / 2.0
+        data.qpos[8:14] = act[7:13]
+        data.qpos[14] = data.qpos[15] = scale_gripper(act[13]) / 2.0
+        mujoco.mj_forward(model, data)
+        pt = (data.xpos[b_finger_l] + data.xpos[b_finger_r]) / 2.0
+        z_list.append(pt[2])
+        pos_list.append(pt)
+
+    min_f = int(np.argmin(z_list))
+    gx = float(pos_list[min_f][0])
+    gy = float(pos_list[min_f][1])
+    return gx, gy
+
+def run_simulation_rollout(model, data, action_sequence, initial_joint_state, grasp_xy=(0.05, -0.10)):
     import mujoco
     screw_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "screwdriver")
     screw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "screwdriver_joint")
+    cup_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target_cup")
+    cup_pos = model.body_pos[cup_body_id] if cup_body_id != -1 else np.array([-0.12, 0.19, 0.001])
     
     mujoco.mj_resetData(model, data)
     data.qpos[0:6] = initial_joint_state[0:6]
@@ -134,7 +158,7 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state):
     data.ctrl[:14] = map_action_to_ctrl(initial_joint_state)
     if screw_joint_id != -1:
         screw_qpos_adr = model.jnt_qposadr[screw_joint_id]
-        data.qpos[screw_qpos_adr : screw_qpos_adr + 7] = [0.05, -0.10, 0.012, 0.7071, 0.0, 0.7071, 0.0]
+        data.qpos[screw_qpos_adr : screw_qpos_adr + 7] = [grasp_xy[0], grasp_xy[1], 0.015, 0.7071, 0.0, 0.7071, 0.0]
     
     mujoco.mj_forward(model, data)
 
@@ -151,10 +175,19 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state):
                 max_screw_z = current_z
 
     lift_cm = (max_screw_z - initial_screw_z) * 100.0
-    success = bool(lift_cm >= 2.0)
+    
+    # Check cup placement
+    final_screw_pos = data.xpos[screw_body_id] if screw_body_id != -1 else np.zeros(3)
+    dist_to_cup = float(np.linalg.norm(final_screw_pos[:2] - cup_pos[:2]))
+    landed_in_cup = bool(dist_to_cup <= 0.070 and final_screw_pos[2] < 0.10)
+    lift_success = bool(lift_cm >= 5.0)
+
     return {
-        "success": success,
+        "success": lift_success,
+        "lift_success": lift_success,
+        "landed_in_cup": landed_in_cup,
         "peak_lift_cm": round(float(lift_cm), 2),
+        "dist_to_cup_cm": round(dist_to_cup * 100.0, 2),
         "final_z": round(float(max_screw_z), 4)
     }
 
@@ -348,40 +381,51 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices):
 
         l1_error = float(np.mean(np.abs(pred_actions - gt_actions)))
 
+        # Calibrated per-episode grasp coordinate
+        grasp_xy = compute_episode_grasp_point(mj_model, mj_data, gt_actions)
+
         # Physical rollout in MuJoCo
-        rollout = run_simulation_rollout(mj_model, mj_data, pred_actions, init_state)
+        rollout = run_simulation_rollout(mj_model, mj_data, pred_actions, init_state, grasp_xy=grasp_xy)
         
         # Human reference rollout for comparison
-        gt_rollout = run_simulation_rollout(mj_model, mj_data, gt_actions, init_state)
+        gt_rollout = run_simulation_rollout(mj_model, mj_data, gt_actions, init_state, grasp_xy=grasp_xy)
 
         results.append({
             "episode_id": ep_id,
-            "success": rollout["success"],
+            "lift_success": rollout["lift_success"],
+            "landed_in_cup": rollout["landed_in_cup"],
             "peak_lift_cm": rollout["peak_lift_cm"],
+            "dist_to_cup_cm": rollout["dist_to_cup_cm"],
             "l1_error_rad": round(l1_error, 4),
             "human_reference": {
-                "success": gt_rollout["success"],
-                "peak_lift_cm": gt_rollout["peak_lift_cm"]
+                "lift_success": gt_rollout["lift_success"],
+                "landed_in_cup": gt_rollout["landed_in_cup"],
+                "peak_lift_cm": gt_rollout["peak_lift_cm"],
+                "dist_to_cup_cm": gt_rollout["dist_to_cup_cm"]
             }
         })
-        print(f"  • Episode {ep_id:2d}: Success={rollout['success']} | Peak Lift={rollout['peak_lift_cm']:.2f}cm | Human Ref Lift={gt_rollout['peak_lift_cm']:.2f}cm | L1 Error={l1_error:.4f} rad")
+        print(f"  • Episode {ep_id:2d}: Lift={rollout['lift_success']} ({rollout['peak_lift_cm']:.1f}cm) | Cup={rollout['landed_in_cup']} (dist {rollout['dist_to_cup_cm']:.1f}cm) | Human Lift={gt_rollout['peak_lift_cm']:.1f}cm Cup={gt_rollout['landed_in_cup']} | L1 Error={l1_error:.4f} rad")
 
-    success_rate = (sum(1 for r in results if r["success"]) / len(results)) * 100.0
-    ref_success_rate = (sum(1 for r in results if r["human_reference"]["success"]) / len(results)) * 100.0
+    lift_rate = (sum(1 for r in results if r["lift_success"]) / len(results)) * 100.0
+    cup_rate = (sum(1 for r in results if r["landed_in_cup"]) / len(results)) * 100.0
+    ref_lift_rate = (sum(1 for r in results if r["human_reference"]["lift_success"]) / len(results)) * 100.0
+    ref_cup_rate = (sum(1 for r in results if r["human_reference"]["landed_in_cup"]) / len(results)) * 100.0
     mean_l1 = float(np.mean([r["l1_error_rad"] for r in results]))
     
     print("\n" + "=" * 70)
     print("📊 HOLD-OUT TEST RESULTS SCORECARD")
     print("=" * 70)
-    print(f"• Evaluated Episodes       : {len(results)}")
-    print(f"• Policy Success Rate      : {success_rate:.1f}%")
-    print(f"• Human Expert Success Rate: {ref_success_rate:.1f}%")
-    print(f"• Mean L1 Action Error     : {mean_l1:.4f} rad")
+    print(f"• Evaluated Episodes            : {len(results)}")
+    print(f"• Policy Lift Success Rate      : {lift_rate:.1f}%  (Human Ref: {ref_lift_rate:.1f}%)")
+    print(f"• Policy Cup Insertion Rate     : {cup_rate:.1f}%  (Human Ref: {ref_cup_rate:.1f}%)")
+    print(f"• Mean L1 Action Error          : {mean_l1:.4f} rad")
     print("=" * 70)
 
     return {
-        "success_rate_pct": success_rate,
-        "human_expert_success_rate_pct": ref_success_rate,
+        "lift_success_rate_pct": lift_rate,
+        "cup_insertion_rate_pct": cup_rate,
+        "human_expert_lift_rate_pct": ref_lift_rate,
+        "human_expert_cup_rate_pct": ref_cup_rate,
         "mean_l1_error_rad": mean_l1,
         "episodes": results
     }
