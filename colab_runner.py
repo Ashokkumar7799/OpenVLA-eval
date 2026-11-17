@@ -10,6 +10,8 @@ It performs:
 """
 
 import os
+if "MUJOCO_GL" not in os.environ and "DISPLAY" not in os.environ:
+    os.environ["MUJOCO_GL"] = "egl"
 import sys
 import glob
 import json
@@ -169,7 +171,11 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state, gr
 
     renderer = None
     if record_video and video_path:
-        renderer = mujoco.Renderer(model, height=480, width=640)
+        try:
+            renderer = mujoco.Renderer(model, height=480, width=640)
+        except Exception as e:
+            print(f"    ⚠️ Headless GL context notice: {e}. Skipping MP4 frame recording.")
+            renderer = None
 
     for act in action_sequence:
         data.ctrl[:14] = map_action_to_ctrl(act)
