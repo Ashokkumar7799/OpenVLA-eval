@@ -6,17 +6,19 @@ os.makedirs(assets_dir, exist_ok=True)
 
 N_SECTOR = 64  # High-resolution smooth circular profile
 
-# Geometry Specs (Tapered Party Cup)
-R_top_out = 0.056       # 11.2 cm outer diameter
-R_top_in = 0.052        # 10.4 cm inner diameter (wide hollow cavity)
-R_bot_out = 0.038       # 7.6 cm bottom diameter
-R_bot_in = 0.035        # 7.0 cm inner bottom diameter
-H = 0.058               # 5.8 cm height (decreased as requested)
-Z_base = 0.003
-Z_floor = 0.006
+# ============================================================
+# Geometry Specs — Wide Short Bowl-like Cup matching real video
+# Real cup: very wide diameter, short height, heavily tapered
+# ============================================================
+R_top_out = 0.070       # 14.0 cm top outer diameter (much wider)
+R_top_in = 0.066        # 13.2 cm top inner diameter
+R_bot_out = 0.035       # 7.0 cm bottom outer diameter (narrower bottom = more taper)
+R_bot_in = 0.031        # 6.2 cm bottom inner diameter
+H = 0.045               # 4.5 cm height (shorter — bowl-like)
+Z_base = 0.002
+Z_floor = 0.005
 
 # 1. Generate Outer Blue Shell (cup_outer.obj)
-# Outer wall slopes from (R_bot_out, Z_base) to (R_top_out, H) + base disk
 verts_outer = []
 faces_outer = []
 
@@ -34,10 +36,6 @@ for i in range(N_SECTOR):
 
 # Faces for base disk
 for i in range(N_SECTOR):
-    v1 = 1
-    v2 = 1 + (i + 1) % N_SECTOR + 1
-    v3 = 1 + i + 1
-    # 1-indexed in OBJ
     faces_outer.append((1, 2 + (i + 1) % N_SECTOR, 2 + i))
 
 # Faces for outer conical wall
@@ -50,7 +48,7 @@ for i in range(N_SECTOR):
     faces_outer.append((b1, t2, t1))
 
 with open(os.path.join(assets_dir, "cup_outer.obj"), "w") as f:
-    f.write("# Tapered Cup Outer Shell\n")
+    f.write("# Tapered Cup Outer Shell - Wide Short Bowl\n")
     for v in verts_outer:
         f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
     for fa in faces_outer:
@@ -59,7 +57,6 @@ with open(os.path.join(assets_dir, "cup_outer.obj"), "w") as f:
 print(f"Generated cup_outer.obj with {len(verts_outer)} vertices, {len(faces_outer)} faces")
 
 # 2. Generate Inner White Hollow Shell (cup_inner.obj)
-# Interior wall slopes from (R_bot_in, Z_floor) to (R_top_in, H) + interior floor disk
 verts_inner = []
 faces_inner = []
 
@@ -89,7 +86,7 @@ for i in range(N_SECTOR):
     faces_inner.append((b1, t1, t2))
 
 with open(os.path.join(assets_dir, "cup_inner.obj"), "w") as f:
-    f.write("# Tapered Cup Inner Hollow Cavity\n")
+    f.write("# Tapered Cup Inner Hollow Cavity - Wide Short Bowl\n")
     for v in verts_inner:
         f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
     for fa in faces_inner:
@@ -98,7 +95,6 @@ with open(os.path.join(assets_dir, "cup_inner.obj"), "w") as f:
 print(f"Generated cup_inner.obj with {len(verts_inner)} vertices, {len(faces_inner)} faces")
 
 # 3. Generate White Curled Top Rim (cup_rim.obj)
-# Connects outer top ring to inner top ring with a smooth rounded bulge
 verts_rim = []
 faces_rim = []
 N_RIM_STEPS = 8
@@ -123,10 +119,15 @@ for j in range(N_RIM_STEPS):
         faces_rim.append((v00, v11, v10))
 
 with open(os.path.join(assets_dir, "cup_rim.obj"), "w") as f:
-    f.write("# Tapered Cup White Curled Rim\n")
+    f.write("# Tapered Cup White Curled Rim - Wide Short Bowl\n")
     for v in verts_rim:
         f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
     for fa in faces_rim:
         f.write(f"f {fa[0]} {fa[1]} {fa[2]}\n")
 
 print(f"Generated cup_rim.obj with {len(verts_rim)} vertices, {len(faces_rim)} faces")
+print(f"\nCup Dimensions:")
+print(f"  Height: {H*100:.1f} cm")
+print(f"  Top Diameter (outer): {R_top_out*200:.1f} cm")
+print(f"  Bottom Diameter (outer): {R_bot_out*200:.1f} cm")
+print(f"  Wall Thickness: {(R_top_out - R_top_in)*1000:.1f} mm")

@@ -19,6 +19,15 @@ __pycache__/
 *.hdf5
 openvla_aloha_output/
 
+# Test scratch images
+test_*.jpg
+test_*.png
+cup_*.jpg
+cup_*.xml
+cup_*.txt
+new_*.jpg
+wide_*.jpg
+
 # OS artifacts
 .DS_Store
 Thumbs.db
