@@ -10,3 +10,4 @@ echo "================================================================="
 echo "🚀 LAUNCHING OPENVLA EVALUATION ON L4 GPU"
 echo "================================================================="
 python colab_runner.py --mode zero_shot --test_limit 5
+

@@ -26,6 +26,9 @@
     <mesh file="wormseye_mount.stl"/>
     <mesh file="tablelegs.obj"/>
     <mesh file="tabletop.obj"/>
+    <mesh name="cup_outer_mesh" file="cup_outer.obj"/>
+    <mesh name="cup_inner_mesh" file="cup_inner.obj"/>
+    <mesh name="cup_rim_mesh" file="cup_rim.obj"/>
 
     <!-- Materials & Textures -->
     <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
@@ -119,15 +122,44 @@
       <geom name="screwdriver_tip" type="cylinder" size="0.0025 0.01" pos="0 0 -0.10" material="metal" mass="0.01"/>
     </body>
 
-    <!-- Blue Paper Cup at Top-Left (With White Rim & Yellow Sponge Filling inside) -->
+    <!-- 🏆 PHOTOREALISTIC HOLLOW CUP WITH CALIBRATED HOLLOW PHYSICS -->
     <body name="target_cup" pos="-0.12 0.16 0.001">
-      <!-- Blue Outer Cup Wall -->
-      <geom name="cup_outer" type="cylinder" size="0.045 0.045" pos="0 0 0.045" material="cup_blue_outer" mass="0.03"/>
-      <!-- White Upper Lip / Rim -->
-      <geom name="cup_lip" type="cylinder" size="0.046 0.003" pos="0 0 0.088" material="cup_white_rim"/>
-      <!-- Yellow Sponge / Clay Filling at Bottom Inside Cup -->
-      <geom name="cup_sponge" type="cylinder" size="0.038 0.025" pos="0 0 0.035" material="cup_sponge_yellow"/>
-      <site name="cup_target_site" pos="0 0 0.09" size="0.015"/>
+      <!-- 1. Smooth Visual Meshes (contype=0 conaffinity=0) -->
+      <geom name="cup_visual_outer" type="mesh" mesh="cup_outer_mesh" material="cup_blue_outer" contype="0" conaffinity="0" group="1"/>
+      <geom name="cup_visual_inner" type="mesh" mesh="cup_inner_mesh" material="cup_white_rim" contype="0" conaffinity="0" group="1"/>
+      <geom name="cup_visual_rim" type="mesh" mesh="cup_rim_mesh" material="cup_white_rim" contype="0" conaffinity="0" group="1"/>
+
+      <!-- 2. Yellow Sponge Inside at Bottom -->
+      <geom name="cup_sponge" type="cylinder" size="0.032 0.009" pos="0 0 0.015" material="cup_sponge_yellow" mass="0.02" friction="1.5 0.1 0.002"/>
+
+      <!-- 3. Cup Base Floor Collision -->
+      <geom name="cup_base_collision" type="cylinder" size="0.038 0.003" pos="0 0 0.003" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.05"/>
+
+      <!-- 4. Invisible Wall Collision Proxies (24 Segments forming hollow wall) -->
+      <geom name="cup_col_0" type="box" size="0.0025 0.0065 0.0290" pos="0.0470 0.0000 0.0290" euler="0 0 0.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_1" type="box" size="0.0025 0.0065 0.0290" pos="0.0454 0.0122 0.0290" euler="0 0 15.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_2" type="box" size="0.0025 0.0065 0.0290" pos="0.0407 0.0235 0.0290" euler="0 0 30.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_3" type="box" size="0.0025 0.0065 0.0290" pos="0.0332 0.0332 0.0290" euler="0 0 45.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_4" type="box" size="0.0025 0.0065 0.0290" pos="0.0235 0.0407 0.0290" euler="0 0 60.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_5" type="box" size="0.0025 0.0065 0.0290" pos="0.0122 0.0454 0.0290" euler="0 0 75.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_6" type="box" size="0.0025 0.0065 0.0290" pos="0.0000 0.0470 0.0290" euler="0 0 90.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_7" type="box" size="0.0025 0.0065 0.0290" pos="-0.0122 0.0454 0.0290" euler="0 0 105.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_8" type="box" size="0.0025 0.0065 0.0290" pos="-0.0235 0.0407 0.0290" euler="0 0 120.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_9" type="box" size="0.0025 0.0065 0.0290" pos="-0.0332 0.0332 0.0290" euler="0 0 135.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_10" type="box" size="0.0025 0.0065 0.0290" pos="-0.0407 0.0235 0.0290" euler="0 0 150.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_11" type="box" size="0.0025 0.0065 0.0290" pos="-0.0454 0.0122 0.0290" euler="0 0 165.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_12" type="box" size="0.0025 0.0065 0.0290" pos="-0.0470 0.0000 0.0290" euler="0 0 180.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_13" type="box" size="0.0025 0.0065 0.0290" pos="-0.0454 -0.0122 0.0290" euler="0 0 195.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_14" type="box" size="0.0025 0.0065 0.0290" pos="-0.0407 -0.0235 0.0290" euler="0 0 210.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_15" type="box" size="0.0025 0.0065 0.0290" pos="-0.0332 -0.0332 0.0290" euler="0 0 225.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_16" type="box" size="0.0025 0.0065 0.0290" pos="-0.0235 -0.0407 0.0290" euler="0 0 240.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_17" type="box" size="0.0025 0.0065 0.0290" pos="-0.0122 -0.0454 0.0290" euler="0 0 255.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_18" type="box" size="0.0025 0.0065 0.0290" pos="-0.0000 -0.0470 0.0290" euler="0 0 270.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_19" type="box" size="0.0025 0.0065 0.0290" pos="0.0122 -0.0454 0.0290" euler="0 0 285.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_20" type="box" size="0.0025 0.0065 0.0290" pos="0.0235 -0.0407 0.0290" euler="0 0 300.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_21" type="box" size="0.0025 0.0065 0.0290" pos="0.0332 -0.0332 0.0290" euler="0 0 315.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_22" type="box" size="0.0025 0.0065 0.0290" pos="0.0407 -0.0235 0.0290" euler="0 0 330.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
+      <geom name="cup_col_23" type="box" size="0.0025 0.0065 0.0290" pos="0.0454 -0.0122 0.0290" euler="0 0 345.0" contype="1" conaffinity="1" rgba="0 0 0 0" mass="0.002"/>
     </body>
 
   </worldbody>
