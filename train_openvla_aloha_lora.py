@@ -17,6 +17,20 @@ import argparse
 import numpy as np
 import pandas as pd
 from PIL import Image
+
+# --- OpenVLA Compatibility Layer for Modern Transformers ---
+import transformers
+try:
+    import transformers.tokenization_utils
+    import transformers.tokenization_utils_base
+    for attr in ["PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"]:
+        if not hasattr(transformers.tokenization_utils, attr) and hasattr(transformers.tokenization_utils_base, attr):
+            setattr(transformers.tokenization_utils, attr, getattr(transformers.tokenization_utils_base, attr))
+    import transformers.modeling_utils
+    transformers.modeling_utils.PreTrainedModel._supports_sdpa = True
+except Exception:
+    pass
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
