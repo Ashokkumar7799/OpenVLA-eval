@@ -223,10 +223,15 @@ class OpenVLAEngine:
             self.model = ModelClass.from_pretrained(
                 model_name,
                 quantization_config=quant_config,
+                torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
                 attn_implementation="eager"
             )
+            for mod_name in ["vision_backbone", "projector"]:
+                m = getattr(self.model, mod_name, None)
+                if m is not None:
+                    m.to(dtype=torch.bfloat16)
         else:
             dtype = torch.bfloat16 if device == "cuda" else torch.float32
             self.model = ModelClass.from_pretrained(

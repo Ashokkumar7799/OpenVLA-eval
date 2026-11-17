@@ -182,6 +182,7 @@ def main():
     base_model = ModelClass.from_pretrained(
         MODEL_ID,
         quantization_config=quant_config,
+        torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
         attn_implementation="eager"
@@ -193,6 +194,12 @@ def main():
         base_model = prepare_model_for_kbit_training(base_model, use_gradient_checkpointing=False)
     except Exception as e:
         print(f"Note on kbit preparation: {e}")
+
+    # Ensure vision backbone and projector modules are strictly bfloat16 to match input tensors
+    for mod_name in ["vision_backbone", "projector"]:
+        m = getattr(base_model, mod_name, None)
+        if m is not None:
+            m.to(dtype=torch.bfloat16)
 
     lora_config = LoraConfig(
         r=args.lora_rank,
