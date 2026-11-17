@@ -54,23 +54,22 @@ def map_action_to_ctrl(action_14):
     return ctrl
 
 def compute_episode_grasp_point(actions, init_state):
-    mujoco.mj_resetData(model, data)
-    data.qpos[0:6] = init_state[0:6]
-    data.qpos[6] = data.qpos[7] = scale_gripper(init_state[6]) / 2.0
-    data.qpos[8:14] = init_state[7:13]
-    data.qpos[14] = data.qpos[15] = scale_gripper(init_state[13]) / 2.0
-    mujoco.mj_forward(model, data)
+    z_list = []
+    pos_list = []
+    for f in range(min(220, len(actions))):
+        act = actions[f]
+        data.qpos[0:6] = act[0:6]
+        data.qpos[6] = data.qpos[7] = scale_gripper(act[6]) / 2.0
+        data.qpos[8:14] = act[7:13]
+        data.qpos[14] = data.qpos[15] = scale_gripper(act[13]) / 2.0
+        mujoco.mj_forward(model, data)
+        pt = (data.xpos[b_finger_l] + data.xpos[b_finger_r]) / 2.0
+        z_list.append(pt[2])
+        pos_list.append(pt)
 
-    grip_cmds = [act[13] for act in actions]
-    close_frame = 80 + np.argmin(grip_cmds[80:180])
-
-    for f in range(close_frame):
-        data.ctrl[:14] = map_action_to_ctrl(actions[f])
-        for _ in range(4):
-            mujoco.mj_step(model, data)
-
-    gx = float((data.xpos[b_finger_l][0] + data.xpos[b_finger_r][0]) / 2.0)
-    gy = float((data.xpos[b_finger_l][1] + data.xpos[b_finger_r][1]) / 2.0)
+    min_f = int(np.argmin(z_list))
+    gx = float(pos_list[min_f][0])
+    gy = float(pos_list[min_f][1])
     return gx, gy
 
 def reset_env(model, data, initial_state, grasp_xy=(0.05, -0.10)):

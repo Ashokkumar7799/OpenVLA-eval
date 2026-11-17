@@ -58,32 +58,25 @@ def map_action_to_ctrl(action_14):
     ctrl[13] = scale_gripper(action_14[13])
     return ctrl
 
-# 3. Detect Exact Episode Grasp Coordinates via Kinematic Pass
+# 3. Detect Exact Episode Pickup Coordinates via Kinematic Pass (Lowest point of Right Gripper)
 print("🔍 Computing calibrated screwdriver placement for this episode...")
-mujoco.mj_resetData(model, data)
-data.qpos[0:6] = initial_state[0:6]
-data.qpos[6] = data.qpos[7] = scale_gripper(initial_state[6]) / 2.0
-data.qpos[8:14] = initial_state[7:13]
-data.qpos[14] = data.qpos[15] = scale_gripper(initial_state[13]) / 2.0
-mujoco.mj_forward(model, data)
+z_list = []
+pos_list = []
+for f in range(min(220, len(actions))):
+    act = actions[f]
+    data.qpos[0:6] = act[0:6]
+    data.qpos[6] = data.qpos[7] = scale_gripper(act[6]) / 2.0
+    data.qpos[8:14] = act[7:13]
+    data.qpos[14] = data.qpos[15] = scale_gripper(act[13]) / 2.0
+    mujoco.mj_forward(model, data)
+    pt = (data.xpos[b_finger_l] + data.xpos[b_finger_r]) / 2.0
+    z_list.append(pt[2])
+    pos_list.append(pt)
 
-grip_cmds = [act[13] for act in actions]
-close_frame = None
-for f in range(10, min(240, len(grip_cmds))):
-    if grip_cmds[f] < 0.15:
-        close_frame = f
-        break
-if close_frame is None:
-    close_frame = int(np.argmin(grip_cmds[:240]))
-
-for f in range(close_frame):
-    data.ctrl[:14] = map_action_to_ctrl(actions[f])
-    for _ in range(4):
-        mujoco.mj_step(model, data)
-
-grasp_x = float((data.xpos[b_finger_l][0] + data.xpos[b_finger_r][0]) / 2.0)
-grasp_y = float((data.xpos[b_finger_l][1] + data.xpos[b_finger_r][1]) / 2.0)
-print(f"🎯 Calibrated Screwdriver Origin: X={grasp_x:.3f}m, Y={grasp_y:.3f}m, Z=0.015m")
+min_f = int(np.argmin(z_list))
+grasp_x = float(pos_list[min_f][0])
+grasp_y = float(pos_list[min_f][1])
+print(f"🎯 Episode {args.episode} Pickup Frame: {min_f} -> Screwdriver Origin: X={grasp_x:.3f}m, Y={grasp_y:.3f}m, Z=0.015m")
 
 def reset_simulation(model, data, state_14):
     mujoco.mj_resetData(model, data)
