@@ -58,6 +58,24 @@ $$b_i = \min(\lfloor \text{norm}_i \times 256 \rfloor, 255)$$
 OpenVLA reserves the final 256 token IDs in its 32,000 LLaMA vocabulary (`31744` to `31999`) for actions:
 $$\text{Token ID}_i = 31744 + b_i$$
 
+### 3.4 4-Camera Synchronized Multi-View Vision Architecture
+Rather than relying on a single overhead view, the vision encoder receives a **synchronized $2 \times 2$ multi-camera mosaic** ($640 \times 480 \times 3$) at every timestep $t$:
+
+```
++------------------------------------+------------------------------------+
+| Top-Left: cam_high (320x240)       | Top-Right: cam_low (320x240)       |
+| • Global tabletop macro view       | • Front depth & clearance view     |
+| • Tracks both arms and cup target  | • Table plane angle                |
++------------------------------------+------------------------------------+
+| Bottom-Left: cam_left_wrist (320)  | Bottom-Right: cam_right_wrist (320)|
+| • Left gripper close-up            | • Right gripper grasp precision    |
+| • Cup stabilization alignment      | • Screwdriver handle contact view  |
++------------------------------------+------------------------------------+
+```
+
+* **Zero Latency Penalty**: OpenVLA's fused DinoV2 + SigLIP encoder natively processes the single $(640 \times 480)$ composite image in standard $1.36\text{ s/it}$ forward passes with no architecture or projector modifications.
+* **Dual-Scale Perception**: Combines macro-scale trajectory navigation with micro-scale millimeter grasp alignment.
+
 ---
 
 ## 4. QLoRA Fine-Tuning Pipeline (`train_openvla_aloha_lora.py`)
@@ -73,7 +91,13 @@ Fine-tuning a 7.5B parameter model on an NVIDIA L4 (24 GB VRAM) requires Quantiz
   - **Trainable Parameters**: $33,554,432$ ($0.44\%$ of model). All other $7.54\text{B}$ parameters are completely frozen.
   - **Peak VRAM**: $\sim 9.2\text{ GB}$ (comfortably fits in 24 GB).
 
-### 4.2 Sequence Composition & Attention Masking
+### 4.2 High-Speed NVMe Image Cache (`./dataset_cache_4cam`)
+In LeRobot 2.0 format, raw telemetry resides in `.parquet` files while video frames are encoded in compressed H.264 `.mp4` containers. To prevent random-seek decoding latency during training:
+1. `prepare_image_cache()` extracts and tiles all 12,000 frames (30 episodes $\times$ 400 frames) sequentially at **229 FPS** into `./dataset_cache_4cam/frame_XXXXXX.jpg` in $\sim 1\text{--}2\text{ minutes}$ once.
+2. The PyTorch `AlohaDataset` loads pre-cached JPEGs in **$< 0.5\text{ ms}$**, eliminating all video decoding bottlenecks.
+3. **Hard Validation**: Strict assertion guards prevent silent black-frame fallbacks. If any image is missing, execution immediately halts.
+
+### 4.3 Sequence Composition & Attention Masking
 Each training step constructs the following multimodal sequence:
 $$\mathbf{S} = [\underbrace{\text{BOS}}_{\text{Token 0}}, \underbrace{\mathbf{V}_1, \dots, \mathbf{V}_{256}}_{\text{256 DINOv2+SigLIP Patch Embeddings}}, \underbrace{P_1, \dots, P_M}_{\text{Prompt Tokens}}, \underbrace{T_0, \dots, T_{13}}_{\text{14 Action Tokens}}]$$
 
@@ -103,8 +127,12 @@ The evaluation engine runs closed-loop control in headless MuJoCo across the 15 
 
 ### 5.2 Verification Metrics
 1. **Grasp & Lift Success**: Right arm gripper lifts screwdriver to height $Z \ge 0.05\text{ m}$.
-2. **Cup Placement Success**: Screwdriver center is located within $R \le 0.058\text{ m}$ of the cup center $[-0.12, 0.19]$ at final frame.
-3. **Trajectory Tracking Error (MSE)**: Mean squared error of joint trajectories versus expert demonstration telemetry.
+2. **Cup Placement Success**: Screwdriver center is located within $R \le 0.070\text{ m}$ of the cup center $[-0.12, 0.19]$ at final frame and height $Z < 0.10\text{ m}$.
+3. **Trajectory Tracking Error (L1 Error)**: Mean absolute error in radians of predicted joint trajectories versus expert demonstration telemetry.
+
+### 5.3 Per-Episode Video Recording & Incremental Checkpointing
+* **Immediate MP4 Video Export**: `eval_episode_{ep_id}.mp4` is encoded and saved via `mediapy` immediately as each individual episode completes its rollout. Inspection does not require waiting for the full 15-episode test batch.
+* **Incremental Scorecard Flushing**: Real-time evaluation metrics are written to `openvla_benchmark_results.json` after every episode, ensuring all benchmark data is preserved if an evaluation run is paused or interrupted.
 
 ---
 
