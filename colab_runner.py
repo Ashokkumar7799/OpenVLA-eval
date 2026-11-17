@@ -74,6 +74,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
     parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank adaptation dimension")
     parser.add_argument("--output_dir", type=str, default="./openvla_aloha_output", help="Directory for artifacts")
+    parser.add_argument("--save_video", action="store_true", help="Record and save MP4 rollout videos of evaluated episodes")
     parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face API token if needed")
     return parser.parse_args()
 
@@ -137,7 +138,7 @@ def compute_episode_grasp_point(model, data, actions):
     gy = float(pos_list[min_f][1])
     return gx, gy
 
-def run_simulation_rollout(model, data, action_sequence, initial_joint_state, grasp_xy=(0.05, -0.10)):
+def run_simulation_rollout(model, data, action_sequence, initial_joint_state, grasp_xy=(0.05, -0.10), record_video=False, video_path=None):
     import mujoco
     screw_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "screwdriver")
     screw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "screwdriver_joint")
@@ -164,6 +165,11 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state, gr
 
     initial_screw_z = data.xpos[screw_body_id][2] if screw_body_id != -1 else 0.0
     max_screw_z = initial_screw_z
+    frames = []
+
+    renderer = None
+    if record_video and video_path:
+        renderer = mujoco.Renderer(model, height=480, width=640)
 
     for act in action_sequence:
         data.ctrl[:14] = map_action_to_ctrl(act)
@@ -173,6 +179,18 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state, gr
             current_z = data.xpos[screw_body_id][2]
             if current_z > max_screw_z:
                 max_screw_z = current_z
+        if renderer is not None:
+            renderer.update_scene(data, camera="overhead_cam")
+            frames.append(renderer.render())
+
+    if record_video and video_path and len(frames) > 0:
+        try:
+            import mediapy as media
+            os.makedirs(os.path.dirname(os.path.abspath(video_path)), exist_ok=True)
+            media.write_video(video_path, frames, fps=50)
+            print(f"    🎥 Saved evaluation rollout video: {video_path}")
+        except Exception as e:
+            print(f"    Note on video save: {e}")
 
     lift_cm = (max_screw_z - initial_screw_z) * 100.0
     
@@ -339,9 +357,10 @@ def parse_action_row(act):
             return out
     return np.zeros(14, dtype=np.float32)
 
-def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices):
+def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, save_video=False, output_dir="./openvla_aloha_output"):
     print(f"\n🔬 Evaluating across {len(episode_indices)} Holdout Episodes...")
     results = []
+    all_predictions = {}
     
     for ep_id in episode_indices:
         ep_data = df[df["episode_index"] == ep_id].sort_values("frame_index")
@@ -379,13 +398,17 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices):
                 pred_actions.append(parse_action_row(act))
             pred_actions = np.stack(pred_actions, axis=0)
 
+        all_predictions[int(ep_id)] = pred_actions.tolist()
         l1_error = float(np.mean(np.abs(pred_actions - gt_actions)))
 
         # Calibrated per-episode grasp coordinate
         grasp_xy = compute_episode_grasp_point(mj_model, mj_data, gt_actions)
 
+        # Video path for visualization
+        v_path = os.path.join(output_dir, f"eval_episode_{ep_id}.mp4") if save_video else None
+
         # Physical rollout in MuJoCo
-        rollout = run_simulation_rollout(mj_model, mj_data, pred_actions, init_state, grasp_xy=grasp_xy)
+        rollout = run_simulation_rollout(mj_model, mj_data, pred_actions, init_state, grasp_xy=grasp_xy, record_video=save_video, video_path=v_path)
         
         # Human reference rollout for comparison
         gt_rollout = run_simulation_rollout(mj_model, mj_data, gt_actions, init_state, grasp_xy=grasp_xy)
@@ -465,7 +488,7 @@ def main():
             print(f"⚠️ Warning: Could not initialize OpenVLA-7B ({e}). Running baseline physics rollout.")
             model_engine = None
 
-    eval_summary = evaluate_episodes(model_engine, mj_model, mj_data, df, test_eps)
+    eval_summary = evaluate_episodes(model_engine, mj_model, mj_data, df, test_eps, save_video=args.save_video, output_dir=args.output_dir)
 
     os.makedirs(args.output_dir, exist_ok=True)
     report_file = os.path.join(args.output_dir, "openvla_benchmark_results.json")
