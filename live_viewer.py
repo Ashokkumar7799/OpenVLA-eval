@@ -68,7 +68,13 @@ data.qpos[14] = data.qpos[15] = scale_gripper(initial_state[13]) / 2.0
 mujoco.mj_forward(model, data)
 
 grip_cmds = [act[13] for act in actions]
-close_frame = 80 + np.argmin(grip_cmds[80:180])
+close_frame = None
+for f in range(10, min(240, len(grip_cmds))):
+    if grip_cmds[f] < 0.15:
+        close_frame = f
+        break
+if close_frame is None:
+    close_frame = int(np.argmin(grip_cmds[:240]))
 
 for f in range(close_frame):
     data.ctrl[:14] = map_action_to_ctrl(actions[f])
