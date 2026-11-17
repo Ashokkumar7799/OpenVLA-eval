@@ -123,7 +123,7 @@
     </body>
 
     <!-- 🏆 PHOTOREALISTIC HOLLOW CUP WITH CALIBRATED HOLLOW PHYSICS -->
-    <body name="target_cup" pos="-0.12 0.16 0.001">
+    <body name="target_cup" pos="-0.12 0.19 0.001">
       <!-- 1. Smooth Visual Meshes (contype=0 conaffinity=0) -->
       <geom name="cup_visual_outer" type="mesh" mesh="cup_outer_mesh" material="cup_blue_outer" contype="0" conaffinity="0" group="1"/>
       <geom name="cup_visual_inner" type="mesh" mesh="cup_inner_mesh" material="cup_white_rim" contype="0" conaffinity="0" group="1"/>
