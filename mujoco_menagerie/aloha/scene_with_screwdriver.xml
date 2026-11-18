@@ -115,11 +115,11 @@
     <body name="screwdriver" pos="0.05 -0.10 0.012" quat="0.7071 0 0.7071 0">
       <freejoint name="screwdriver_joint"/>
       <!-- High friction rubber handle so grippers firmly lock without slipping -->
-      <geom name="screwdriver_grip" type="cylinder" size="0.013 0.038" pos="0 0 0.038" material="screwdriver_handle" mass="0.04" friction="2.0 0.1 0.002" condim="4"/>
-      <!-- Metal Shaft -->
-      <geom name="screwdriver_shaft" type="cylinder" size="0.0035 0.045" pos="0 0 -0.045" material="screwdriver_metal" mass="0.03" friction="1.5 0.1 0.001" condim="4"/>
+      <geom name="screwdriver_grip" type="cylinder" size="0.013 0.038" pos="0 0 0.038" material="screwdriver_handle" mass="0.04" friction="2.5 0.1 0.002" condim="4"/>
+      <!-- Calibrated Metal Shaft (visual 4.5mm shaft + 7mm compliant gripper-pad contact margin for mid-air handover) -->
+      <geom name="screwdriver_shaft" type="cylinder" size="0.0045 0.065" pos="0 0 -0.065" material="screwdriver_metal" mass="0.03" friction="2.5 0.1 0.002" condim="4" margin="0.007"/>
       <!-- Magnetic Tip -->
-      <geom name="screwdriver_tip" type="cylinder" size="0.0025 0.01" pos="0 0 -0.10" material="metal" mass="0.01"/>
+      <geom name="screwdriver_tip" type="cylinder" size="0.0035 0.008" pos="0 0 -0.138" material="metal" mass="0.01" friction="2.0 0.1 0.002" condim="4" margin="0.007"/>
     </body>
 
     <!-- 🏆 PHOTOREALISTIC HOLLOW CUP WITH CALIBRATED HOLLOW PHYSICS -->
