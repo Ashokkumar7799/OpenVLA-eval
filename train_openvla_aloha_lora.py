@@ -51,7 +51,7 @@ ACTION_MAX = np.array([
 
 def parse_args():
     parser = argparse.ArgumentParser(description="OpenVLA 14-DoF LoRA Training")
-    parser.add_argument("--epochs", type=int, default=2, help="Training epochs (default: 2)")
+    parser.add_argument("--epochs", type=int, default=3, help="Training epochs (default: 3)")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size (default: 4)")
     parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate for LoRA (default: 2e-4)")
     parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank dimension (default: 32)")
@@ -315,7 +315,9 @@ def main():
     model.train()
 
     print(f"\n🚀 Commencing 14-DoF Training ({args.camera_mode}, lr={args.lr}, stride={args.frame_stride}) across {args.epochs} Epochs on L4 GPU...")
+    training_history = []
     for epoch in range(1, args.epochs + 1):
+        ep_t0 = time.time()
         epoch_loss = 0.0
         pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{args.epochs}")
         for step, batch in enumerate(pbar):
@@ -341,10 +343,34 @@ def main():
             pbar.set_postfix({"loss": f"{loss.item():.4f}", "avg_loss": f"{epoch_loss / (step + 1):.4f}"})
 
         mean_ep_loss = epoch_loss / len(dataloader)
-        print(f"✅ Epoch {epoch} completed! Mean Loss: {mean_ep_loss:.4f}")
-        # Save checkpoint immediately after every epoch so progress is never lost
+        ep_mins = round((time.time() - ep_t0) / 60.0, 2)
+        print(f"✅ Epoch {epoch} completed in {ep_mins:.1f} min! Mean Loss: {mean_ep_loss:.4f}")
+
+        # Save BOTH per-epoch snapshot AND latest checkpoint + metrics JSON
+        ep_ckpt_dir = f"{args.output_dir}_epoch_{epoch}"
+        os.makedirs(ep_ckpt_dir, exist_ok=True)
+        model.save_pretrained(ep_ckpt_dir)
         model.save_pretrained(args.output_dir)
-        print(f"💾 Checkpoint saved after Epoch {epoch} -> {args.output_dir}")
+
+        training_history.append({
+            "epoch": epoch,
+            "mean_loss": round(float(mean_ep_loss), 4),
+            "duration_min": ep_mins,
+            "checkpoint_dir": ep_ckpt_dir
+        })
+        with open(os.path.join(args.output_dir, "training_metrics.json"), "w") as f:
+            json.dump({
+                "camera_mode": args.camera_mode,
+                "lr": args.lr,
+                "batch_size": args.batch_size,
+                "frame_stride": args.frame_stride,
+                "lora_rank": args.lora_rank,
+                "epochs_completed": epoch,
+                "history": training_history
+            }, f, indent=2)
+
+        print(f"💾 Saved Epoch {epoch} snapshot -> {ep_ckpt_dir}")
+        print(f"💾 Updated latest checkpoint & training_metrics.json -> {args.output_dir}")
 
     print("\n" + "=" * 80)
     print(f"🎉 MODEL A (4-CAMERA 30-EPISODE LORA) SAVED SUCCESSFULLY!")
