@@ -257,18 +257,24 @@ def download_dataset(hf_token=None):
     return df, repo_dir
 
 def shift_both_to_red_bgr(img_bgr):
-    """OOD visual shift: transforms yellow screwdriver & blue cup to vibrant RED while preserving table & robot arms."""
+    """OOD visual shift: transforms yellow screwdriver & blue cup to vibrant RED (even under overhead glare) while preserving table & robot arms."""
     import cv2
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    # 1. Yellow screwdriver handle & sponge -> Vibrant Red (Hue ~0)
-    yellow_mask = (h >= 15) & (h <= 42) & (s >= 45) & (v >= 80)
-    hsv[:, :, 0] = np.where(yellow_mask, (h - 28) % 180, hsv[:, :, 0])
-    hsv[:, :, 1] = np.where(yellow_mask, np.clip(s * 1.25, 0, 255), hsv[:, :, 1])
-    # 2. Blue/Cyan cup -> Vibrant Red (Hue ~0)
-    blue_mask = (h >= 85) & (h <= 125) & (s >= 55) & (v >= 50)
+    b_ch = img_bgr[:, :, 0].astype(np.float32)
+    g_ch = img_bgr[:, :, 1].astype(np.float32)
+    r_ch = img_bgr[:, :, 2].astype(np.float32)
+
+    # 1. Yellow screwdriver handle & sponge (catches pale overhead glare S>=14 while rejecting neutral white tape)
+    yellow_mask = (h >= 16) & (h <= 42) & (s >= 14) & (v >= 95) & (r_ch > b_ch + 12) & (g_ch > b_ch + 12)
+    hsv[:, :, 0] = np.where(yellow_mask, 0.0, hsv[:, :, 0])
+    hsv[:, :, 1] = np.where(yellow_mask, np.clip(np.maximum(s * 1.4, s * 2.5 + 90), 0, 235), hsv[:, :, 1])
+    hsv[:, :, 2] = np.where(yellow_mask, np.clip(v * 0.85, 0, 240), hsv[:, :, 2])
+
+    # 2. Blue/Cyan cup -> Vibrant Red
+    blue_mask = (h >= 85) & (h <= 125) & (s >= 45) & (v >= 50)
     hsv[:, :, 0] = np.where(blue_mask, (h - 98) % 180, hsv[:, :, 0])
-    hsv[:, :, 1] = np.where(blue_mask, np.clip(s * 1.15, 0, 255), hsv[:, :, 1])
+    hsv[:, :, 1] = np.where(blue_mask, np.clip(s * 1.2, 0, 245), hsv[:, :, 1])
     return cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 class MultiCamEpisodeReader:
