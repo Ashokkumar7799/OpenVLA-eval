@@ -78,6 +78,10 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="./openvla_aloha_output", help="Directory for artifacts")
     parser.add_argument("--camera_mode", choices=["4cam", "cam_high"], default="4cam",
                         help="Camera input mode: '4cam' (2x2 mosaic) or 'cam_high' (overhead only)")
+    parser.add_argument("--episodes", type=int, nargs="+", default=None,
+                        help="Specific episode IDs to evaluate (e.g. --episodes 35)")
+    parser.add_argument("--ood_red", action="store_true",
+                        help="OOD Stress Test: shift both yellow screwdriver and blue cup to RED across all 4 cameras")
     parser.add_argument("--save_video", action="store_true", help="Record and save MP4 rollout videos of evaluated episodes")
     parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face API token if needed")
     return parser.parse_args()
@@ -252,10 +256,26 @@ def download_dataset(hf_token=None):
     print(f"📊 Loaded {len(df):,} total frames across {df['episode_index'].nunique()} episodes.")
     return df, repo_dir
 
+def shift_both_to_red_bgr(img_bgr):
+    """OOD visual shift: transforms yellow screwdriver & blue cup to vibrant RED while preserving table & robot arms."""
+    import cv2
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    # 1. Yellow screwdriver handle & sponge -> Vibrant Red (Hue ~0)
+    yellow_mask = (h >= 15) & (h <= 42) & (s >= 45) & (v >= 80)
+    hsv[:, :, 0] = np.where(yellow_mask, (h - 28) % 180, hsv[:, :, 0])
+    hsv[:, :, 1] = np.where(yellow_mask, np.clip(s * 1.25, 0, 255), hsv[:, :, 1])
+    # 2. Blue/Cyan cup -> Vibrant Red (Hue ~0)
+    blue_mask = (h >= 85) & (h <= 125) & (s >= 55) & (v >= 50)
+    hsv[:, :, 0] = np.where(blue_mask, (h - 98) % 180, hsv[:, :, 0])
+    hsv[:, :, 1] = np.where(blue_mask, np.clip(s * 1.15, 0, 255), hsv[:, :, 1])
+    return cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2BGR)
+
 class MultiCamEpisodeReader:
-    def __init__(self, repo_dir, mode="4cam"):
+    def __init__(self, repo_dir, mode="4cam", ood_red=False):
         import cv2
         self.mode = mode
+        self.ood_red = ood_red
         def _find_vid(name):
             res = glob.glob(os.path.join(repo_dir, "**", f"*{name}*", "**", "*.mp4"), recursive=True)
             if not res:
@@ -282,6 +302,8 @@ class MultiCamEpisodeReader:
         if fh is None:
             return None
         if self.mode == "cam_high":
+            if self.ood_red:
+                fh = shift_both_to_red_bgr(fh)
             return cv2.cvtColor(fh, cv2.COLOR_BGR2RGB)
         
         _, fl = self.cap_l.read()
@@ -293,6 +315,8 @@ class MultiCamEpisodeReader:
         top = np.hstack([cv2.resize(fh, (320, 240)), cv2.resize(fl, (320, 240))])
         bot = np.hstack([cv2.resize(flw, (320, 240)), cv2.resize(frw, (320, 240))])
         grid = np.vstack([top, bot])
+        if self.ood_red:
+            grid = shift_both_to_red_bgr(grid)
         return cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
 
     def close(self):
@@ -530,7 +554,14 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
         grasp_xy = compute_episode_grasp_point(mj_model, mj_data, gt_actions)
 
         # Video path for visualization
-        v_path = os.path.join(output_dir, f"eval_episode_{ep_id}.mp4") if save_video else None
+        is_ood = bool(multi_cam_reader is not None and getattr(multi_cam_reader, "ood_red", False))
+        suffix = "_ood_red" if is_ood else ""
+        if is_ood and len(ep_frames) > 100:
+            os.makedirs(output_dir, exist_ok=True)
+            ood_chk_path = os.path.join(output_dir, f"ood_red_input_ep{ep_id}_frame100.jpg")
+            Image.fromarray(ep_frames[100]).save(ood_chk_path)
+            print(f"  🎨 Saved OOD Red input preview: {ood_chk_path}")
+        v_path = os.path.join(output_dir, f"eval_episode_{ep_id}{suffix}.mp4") if save_video else None
 
         # Physical rollout in MuJoCo
         rollout = run_simulation_rollout(mj_model, mj_data, pred_actions, init_state, grasp_xy=grasp_xy, record_video=save_video, video_path=v_path)
@@ -540,6 +571,7 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
 
         ep_result = {
             "episode_id": ep_id,
+            "ood_red": is_ood,
             "lift_success": rollout["lift_success"],
             "landed_in_cup": rollout["landed_in_cup"],
             "peak_lift_cm": rollout["peak_lift_cm"],
@@ -554,12 +586,13 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
             }
         }
         results.append(ep_result)
-        print(f"  • Episode {ep_id:2d}: Lift={rollout['lift_success']} ({rollout['peak_lift_cm']:.1f}cm) | Cup={rollout['landed_in_cup']} (dist {rollout['dist_to_cup_cm']:.1f}cm) | Human Lift={gt_rollout['peak_lift_cm']:.1f}cm Cup={gt_rollout['landed_in_cup']} | L1 Error={l1_error:.4f} rad")
+        tag = " [OOD RED]" if is_ood else ""
+        print(f"  • Episode {ep_id:2d}{tag}: Lift={rollout['lift_success']} ({rollout['peak_lift_cm']:.1f}cm) | Cup={rollout['landed_in_cup']} (dist {rollout['dist_to_cup_cm']:.1f}cm) | Human Lift={gt_rollout['peak_lift_cm']:.1f}cm Cup={gt_rollout['landed_in_cup']} | L1 Error={l1_error:.4f} rad")
         if v_path and os.path.exists(v_path):
             print(f"  🎬 Episode {ep_id} video ready: {v_path}")
 
         # Incremental auto-save so intermediate scorecard is always up to date on disk
-        interim_report_file = os.path.join(output_dir, "openvla_benchmark_results.json")
+        interim_report_file = os.path.join(output_dir, f"openvla_benchmark_results{suffix}.json")
         try:
             curr_lift = (sum(1 for r in results if r["lift_success"]) / len(results)) * 100.0
             curr_cup = (sum(1 for r in results if r["landed_in_cup"]) / len(results)) * 100.0
@@ -612,14 +645,18 @@ def main():
     # Load splits
     with open(SPLITS_JSON, "r") as f:
         splits = json.load(f)["splits"]
-    test_eps = splits["test"]["episodes"][:args.test_limit]
+    if args.episodes:
+        test_eps = args.episodes
+    else:
+        test_eps = splits["test"]["episodes"][:args.test_limit]
     train_eps = splits["train"]["episodes"]
 
-    print(f"📂 Evaluating {len(test_eps)} Test Episodes ({test_eps[0]} to {test_eps[-1]}).")
+    ood_banner = " [OOD RED STRESS TEST: Red Screwdriver + Red Cup]" if args.ood_red else ""
+    print(f"📂 Evaluating {len(test_eps)} Test Episode(s): {test_eps}{ood_banner}")
 
     # Download / Load dataset
     df, repo_dir = download_dataset(args.hf_token)
-    multi_cam_reader = MultiCamEpisodeReader(repo_dir, mode=args.camera_mode)
+    multi_cam_reader = MultiCamEpisodeReader(repo_dir, mode=args.camera_mode, ood_red=args.ood_red)
 
     device = "cuda" if (TORCH_AVAILABLE and torch.cuda.is_available()) else "cpu"
     print(f"🖥️ Execution Device: {device.upper()}")
@@ -645,7 +682,8 @@ def main():
     multi_cam_reader.close()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    report_file = os.path.join(args.output_dir, "openvla_benchmark_results.json")
+    suffix = "_ood_red" if args.ood_red else ""
+    report_file = os.path.join(args.output_dir, f"openvla_benchmark_results{suffix}.json")
 
     report = {
         "mode": args.mode,
