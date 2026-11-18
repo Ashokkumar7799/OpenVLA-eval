@@ -231,7 +231,10 @@ def download_dataset(hf_token=None):
         token=token
     )
     print(f"✅ Dataset cached at: {repo_dir}")
-    parquet_files = glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True)
+    # Load ONLY episode telemetry parquets under data/ (exclude meta/*.parquet)
+    parquet_files = glob.glob(os.path.join(repo_dir, "data", "**", "*.parquet"), recursive=True)
+    if not parquet_files:
+        parquet_files = [p for p in glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True) if "meta" not in p]
     if not parquet_files:
         raise FileNotFoundError(f"No parquet files found in {repo_dir}")
     
@@ -381,10 +384,12 @@ class OpenVLAEngine:
         
         with torch.no_grad():
             if self.is_lora_14dof:
-                # Autoregressively generate 14 action tokens for bimanual ALOHA
+                # Autoregressively generate strictly 14 action tokens for bimanual ALOHA
                 generated_ids = self.model.generate(
                     **inputs,
+                    min_new_tokens=14,
                     max_new_tokens=14,
+                    eos_token_id=None,
                     do_sample=False,
                     pad_token_id=self.processor.tokenizer.pad_token_id
                 )
@@ -444,8 +449,8 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
                 multi_cam_reader.seek_episode(ep_id)
 
             pred_actions = []
-            frame_pbar = tqdm(ep_data.iterrows(), total=len(ep_data), desc=f"  🎬 Ep {ep_id} Rollout (4-Cam Vision)", leave=False)
-            for _, row in frame_pbar:
+            frame_pbar = tqdm(enumerate(ep_data.iterrows()), total=len(ep_data), desc=f"  🎬 Ep {ep_id} Rollout (4-Cam Vision)", leave=False)
+            for f_i, (_, row) in frame_pbar:
                 if multi_cam_reader is not None:
                     img_np = multi_cam_reader.read_next_frame()
                     if img_np is None:
@@ -460,6 +465,10 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
                         img_np = np.array(raw_img)
                     else:
                         raise ValueError(f"No valid image found for episode {ep_id} and multi_cam_reader is None")
+                if f_i == 0:
+                    m_val, s_val = float(img_np.mean()), float(img_np.std())
+                    if m_val < 5.0 or s_val < 5.0:
+                        raise RuntimeError(f"ABORTING! Eval frame 0 of Ep {ep_id} appears black/blank (mean={m_val:.1f}, std={s_val:.1f}).")
                 act = model_engine.predict_action(img_np)
                 pred_actions.append(parse_action_row(act))
             pred_actions = np.stack(pred_actions, axis=0)

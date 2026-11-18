@@ -51,10 +51,11 @@ ACTION_MAX = np.array([
 
 def parse_args():
     parser = argparse.ArgumentParser(description="OpenVLA 14-DoF LoRA Training")
-    parser.add_argument("--epochs", type=int, default=3, help="Training epochs (default: 3)")
+    parser.add_argument("--epochs", type=int, default=2, help="Training epochs (default: 2)")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size (default: 4)")
-    parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate (default: 2e-5)")
+    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate for LoRA (default: 2e-4)")
     parser.add_argument("--lora_rank", type=int, default=32, help="LoRA rank dimension (default: 32)")
+    parser.add_argument("--frame_stride", type=int, default=2, help="Subsample stride (1=50Hz all 12k frames, 2=25Hz 6k frames ~40min/epoch)")
     parser.add_argument("--camera_mode", choices=["4cam", "cam_high"], default="4cam",
                         help="Camera input mode: '4cam' (2x2 mosaic) or 'cam_high' (overhead only)")
     parser.add_argument("--output_dir", type=str, default="./openvla_aloha_output/model_a_raw_lora", help="Output adapter dir")
@@ -72,7 +73,10 @@ def download_dataset(hf_token=None):
         allow_patterns=["*.parquet", "*.json", "meta/**", "videos/**"],
         token=token
     )
-    parquet_files = glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True)
+    # Only load episode telemetry parquets under data/ (exclude meta/*.parquet)
+    parquet_files = glob.glob(os.path.join(repo_dir, "data", "**", "*.parquet"), recursive=True)
+    if not parquet_files:
+        parquet_files = [p for p in glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True) if "meta" not in p]
     dfs = [pd.read_parquet(p) for p in parquet_files]
     df = pd.concat(dfs, ignore_index=True)
     print(f"📊 Dataset ready: {len(df):,} total frames across {df['episode_index'].nunique()} episodes.")
@@ -102,6 +106,12 @@ def prepare_image_cache(repo_dir, train_episodes, cache_dir="./dataset_cache_4ca
 
     for ep_id in tqdm(train_episodes, desc=f"  Extracting {mode} Episodes"):
         start_frame = ep_id * 400
+        # Skip entire episode only if last frame is already cached
+        last_ep_frame = os.path.join(cache_dir, f"frame_{start_frame + 399:06d}.jpg")
+        first_ep_frame = os.path.join(cache_dir, f"frame_{start_frame:06d}.jpg")
+        if os.path.exists(first_ep_frame) and os.path.exists(last_ep_frame):
+            continue
+
         cap_h.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         if mode == "4cam":
             cap_l.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -111,25 +121,25 @@ def prepare_image_cache(repo_dir, train_episodes, cache_dir="./dataset_cache_4ca
         for f_offset in range(400):
             abs_idx = start_frame + f_offset
             save_path = os.path.join(cache_dir, f"frame_{abs_idx:06d}.jpg")
-            if os.path.exists(save_path):
-                continue
 
             _, fh = cap_h.read()
             if fh is None:
                 raise RuntimeError(f"Corrupted cam_high frame at absolute index {abs_idx}")
 
             if mode == "cam_high":
-                cv2.imwrite(save_path, fh, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                if not os.path.exists(save_path):
+                    cv2.imwrite(save_path, fh, [cv2.IMWRITE_JPEG_QUALITY, 92])
             else:
                 _, fl = cap_l.read()
                 _, flw = cap_lw.read()
                 _, frw = cap_rw.read()
                 if fl is None or flw is None or frw is None:
                     raise RuntimeError(f"Corrupted wrist/low camera frame at index {abs_idx}")
-                top = np.hstack([cv2.resize(fh, (320, 240)), cv2.resize(fl, (320, 240))])
-                bot = np.hstack([cv2.resize(flw, (320, 240)), cv2.resize(frw, (320, 240))])
-                grid = np.vstack([top, bot])
-                cv2.imwrite(save_path, grid, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                if not os.path.exists(save_path):
+                    top = np.hstack([cv2.resize(fh, (320, 240)), cv2.resize(fl, (320, 240))])
+                    bot = np.hstack([cv2.resize(flw, (320, 240)), cv2.resize(frw, (320, 240))])
+                    grid = np.vstack([top, bot])
+                    cv2.imwrite(save_path, grid, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
     cap_h.release()
     if cap_l: cap_l.release()
@@ -147,12 +157,14 @@ def actions_to_tokens(action_14, vocab_size=32000, num_bins=256):
     return action_token_ids.tolist()
 
 class AlohaDataset(Dataset):
-    def __init__(self, df, train_episodes, cache_dir, processor):
+    def __init__(self, df, train_episodes, cache_dir, processor, frame_stride=1):
         self.samples = []
         self.cache_dir = cache_dir
         train_df = df[df["episode_index"].isin(train_episodes)].sort_values(["episode_index", "frame_index"])
         
         for _, row in train_df.iterrows():
+            if int(row["frame_index"]) % frame_stride != 0:
+                continue
             act = row["action"]
             if act is not None and hasattr(act, "__len__") and len(act) == 14:
                 abs_idx = int(row["index"])
@@ -164,9 +176,20 @@ class AlohaDataset(Dataset):
                     "img_path": img_path
                 })
         
+        if len(self.samples) == 0:
+            raise RuntimeError("Dataset has 0 samples! Check parquet columns and cache_dir.")
+
+        # Hard visual sanity check on first sample (guarantee non-black real camera pixels!)
+        sample_img = np.array(Image.open(self.samples[0]["img_path"]).convert("RGB"))
+        mean_val = float(sample_img.mean())
+        std_val = float(sample_img.std())
+        print(f"🔍 Visual Sanity Check (Sample 0): shape={sample_img.shape}, mean={mean_val:.1f}, std={std_val:.1f}")
+        if mean_val < 5.0 or std_val < 5.0:
+            raise RuntimeError(f"ABORTING! Sample 0 appears black/blank (mean={mean_val:.1f}, std={std_val:.1f}).")
+
         self.processor = processor
         self.prompt = "In: What action should the robot take to pick up the yellow screwdriver and place it into the blue cup?\nOut:"
-        print(f"✅ Prepared {len(self.samples):,} verified training samples across {len(train_episodes)} episodes.")
+        print(f"✅ Prepared {len(self.samples):,} verified training samples across {len(train_episodes)} episodes (stride={frame_stride}).")
 
     def __len__(self):
         return len(self.samples)
@@ -273,7 +296,12 @@ def main():
     model.print_trainable_parameters()
 
     # 5. Dataset & DataLoader
-    dataset = AlohaDataset(df, train_eps, cache_dir, processor)
+    dataset = AlohaDataset(df, train_eps, cache_dir, processor, frame_stride=args.frame_stride)
+    os.makedirs(args.output_dir, exist_ok=True)
+    # Save visual proof of training input sample 0
+    Image.open(dataset.samples[0]["img_path"]).save(os.path.join(args.output_dir, "verify_train_sample_0.jpg"))
+    print(f"🖼️  Saved visual input check to: {os.path.join(args.output_dir, 'verify_train_sample_0.jpg')}")
+
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -286,7 +314,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     model.train()
 
-    print(f"\n🚀 Commencing 14-DoF Training across {args.epochs} Epochs on L4 GPU...")
+    print(f"\n🚀 Commencing 14-DoF Training ({args.camera_mode}, lr={args.lr}, stride={args.frame_stride}) across {args.epochs} Epochs on L4 GPU...")
     for epoch in range(1, args.epochs + 1):
         epoch_loss = 0.0
         pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{args.epochs}")
@@ -306,18 +334,20 @@ def main():
             outputs = model(**batch)
             loss = outputs.loss
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
             epoch_loss += loss.item()
             pbar.set_postfix({"loss": f"{loss.item():.4f}", "avg_loss": f"{epoch_loss / (step + 1):.4f}"})
 
-        print(f"✅ Epoch {epoch} completed! Mean Loss: {epoch_loss / len(dataloader):.4f}")
+        mean_ep_loss = epoch_loss / len(dataloader)
+        print(f"✅ Epoch {epoch} completed! Mean Loss: {mean_ep_loss:.4f}")
+        # Save checkpoint immediately after every epoch so progress is never lost
+        model.save_pretrained(args.output_dir)
+        print(f"💾 Checkpoint saved after Epoch {epoch} -> {args.output_dir}")
 
-    # 7. Save Model A Checkpoint
-    os.makedirs(args.output_dir, exist_ok=True)
-    model.save_pretrained(args.output_dir)
     print("\n" + "=" * 80)
-    print(f"🎉 MODEL A (RAW 30-EPISODE LORA) SAVED SUCCESSFULLY!")
+    print(f"🎉 MODEL A (4-CAMERA 30-EPISODE LORA) SAVED SUCCESSFULLY!")
     print(f"💾 Checkpoint path: {args.output_dir}")
     print("=" * 80)
 
