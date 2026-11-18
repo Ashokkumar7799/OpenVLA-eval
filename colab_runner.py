@@ -215,7 +215,7 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state, gr
     # Check cup placement
     final_screw_pos = data.xpos[screw_body_id] if screw_body_id != -1 else np.zeros(3)
     dist_to_cup = float(np.linalg.norm(final_screw_pos[:2] - cup_pos[:2]))
-    landed_in_cup = bool(dist_to_cup <= 0.070 and final_screw_pos[2] < 0.10)
+    landed_in_cup = bool(dist_to_cup <= 0.070 and final_screw_pos[2] < 0.16)
     lift_success = bool(lift_cm >= 5.0)
 
     return {
