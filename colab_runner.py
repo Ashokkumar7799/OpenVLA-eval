@@ -375,31 +375,58 @@ class OpenVLAEngine:
             self.is_lora_14dof = True
             print("✅ 14-DoF Bimanual ALOHA adapter active! Generating 14 bimanual motor actions directly.")
 
-        print("✨ OpenVLA foundation model successfully loaded into memory!")
+        self.model.eval()
+        print("✨ OpenVLA foundation model successfully loaded into memory (eval mode)!")
+
+    def predict_actions_batch(self, images_np_list, instruction="pick up the yellow screwdriver and place it into the blue cup"):
+        """
+        Direct forward-pass autoregressive decoding for a batch of RGB images.
+        Uses the exact same model(input_ids, attention_mask, pixel_values, use_cache=False)
+        path as training, completely bypassing transformers >= 4.50's DynamicCache bug where
+        PrismaticForConditionalGeneration.prepare_inputs_for_generation() drops pixel_values on step 0.
+        """
+        pil_images = [Image.fromarray(im).convert("RGB") for im in images_np_list]
+        prompt = f"In: What action should the robot take to {instruction}?\nOut:"
+        prompts = [prompt] * len(pil_images)
+
+        inputs = self.processor(text=prompts, images=pil_images, return_tensors="pt", padding=True)
+        cur_ids = inputs["input_ids"].to(self.device)
+        cur_mask = inputs["attention_mask"].to(self.device) if "attention_mask" in inputs and inputs["attention_mask"] is not None else torch.ones_like(cur_ids)
+        pixel_values = inputs["pixel_values"].to(self.device, dtype=torch.bfloat16)
+
+        with torch.no_grad():
+            if self.is_lora_14dof:
+                gen_tokens = []
+                for _ in range(14):
+                    outputs = self.model(
+                        input_ids=cur_ids,
+                        attention_mask=cur_mask,
+                        pixel_values=pixel_values,
+                        use_cache=False
+                    )
+                    # Decode within OpenVLA's 256 action vocabulary bins [31744..31999]
+                    action_logits = outputs.logits[:, -1, 31744:32000]
+                    next_token = 31744 + torch.argmax(action_logits, dim=-1, keepdim=True)
+                    gen_tokens.append(next_token)
+                    cur_ids = torch.cat([cur_ids, next_token], dim=1)
+                    cur_mask = torch.cat([cur_mask, torch.ones_like(next_token)], dim=1)
+
+                # [B, 14]
+                token_matrix = torch.cat(gen_tokens, dim=1).cpu().numpy()
+                return [tokens_to_aloha_actions(row_toks) for row_toks in token_matrix]
+            else:
+                return [self.predict_action(im, instruction=instruction) for im in images_np_list]
 
     def predict_action(self, image_np, instruction="pick up the yellow screwdriver and place it into the blue cup"):
+        if self.is_lora_14dof:
+            return self.predict_actions_batch([image_np], instruction=instruction)[0]
         image = Image.fromarray(image_np)
         prompt = f"In: What action should the robot take to {instruction}?\nOut:"
         inputs = self.processor(prompt, image).to(self.device, dtype=torch.bfloat16)
-        
         with torch.no_grad():
-            if self.is_lora_14dof:
-                # Autoregressively generate strictly 14 action tokens for bimanual ALOHA
-                generated_ids = self.model.generate(
-                    **inputs,
-                    min_new_tokens=14,
-                    max_new_tokens=14,
-                    eos_token_id=None,
-                    do_sample=False,
-                    pad_token_id=self.processor.tokenizer.pad_token_id
-                )
-                action_tokens = generated_ids[0, -14:].cpu().numpy()
-                action = tokens_to_aloha_actions(action_tokens)
-            elif hasattr(self.model, "predict_action"):
-                action = self.model.predict_action(**inputs, unnorm_key="bridge_orig", do_sample=False)
-            else:
-                action = np.zeros(14, dtype=np.float32)
-        return action
+            if hasattr(self.model, "predict_action"):
+                return self.model.predict_action(**inputs, unnorm_key="bridge_orig", do_sample=False)
+            return np.zeros(14, dtype=np.float32)
 
 # ==============================================================================
 # 4. Evaluation Routine
@@ -442,15 +469,14 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
             # Baseline: Zero-action static or human reference comparison
             pred_actions = np.zeros_like(gt_actions)
         else:
-            # OpenVLA model predictions
+            # OpenVLA model predictions (batched direct forward-pass decoding)
             import io
             from tqdm import tqdm
             if multi_cam_reader is not None:
                 multi_cam_reader.seek_episode(ep_id)
 
-            pred_actions = []
-            frame_pbar = tqdm(enumerate(ep_data.iterrows()), total=len(ep_data), desc=f"  🎬 Ep {ep_id} Rollout (4-Cam Vision)", leave=False)
-            for f_i, (_, row) in frame_pbar:
+            ep_frames = []
+            for f_i, (_, row) in enumerate(ep_data.iterrows()):
                 if multi_cam_reader is not None:
                     img_np = multi_cam_reader.read_next_frame()
                     if img_np is None:
@@ -469,8 +495,26 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
                     m_val, s_val = float(img_np.mean()), float(img_np.std())
                     if m_val < 5.0 or s_val < 5.0:
                         raise RuntimeError(f"ABORTING! Eval frame 0 of Ep {ep_id} appears black/blank (mean={m_val:.1f}, std={s_val:.1f}).")
-                act = model_engine.predict_action(img_np)
-                pred_actions.append(parse_action_row(act))
+                ep_frames.append(img_np)
+
+            # Upfront 2-frame vision responsiveness check on first episode (proves vision is NOT bypassed!)
+            if ep_id == episode_indices[0] and len(ep_frames) > 150:
+                chk_acts = model_engine.predict_actions_batch([ep_frames[0], ep_frames[150]])
+                pred_delta = float(np.mean(np.abs(chk_acts[0] - chk_acts[1])))
+                gt_delta = float(np.mean(np.abs(gt_actions[0] - gt_actions[150])))
+                print(f"  🔍 Vision Check (Ep {ep_id} Frame 0 vs 150): Pred Δ={pred_delta:.4f} rad | Human Δ={gt_delta:.4f} rad")
+                print(f"     • Frame   0 R-arm [shld, elbow, grip]: Pred={np.round(chk_acts[0][[8,9,13]], 3)} vs GT={np.round(gt_actions[0][[8,9,13]], 3)}")
+                print(f"     • Frame 150 R-arm [shld, elbow, grip]: Pred={np.round(chk_acts[1][[8,9,13]], 3)} vs GT={np.round(gt_actions[150][[8,9,13]], 3)}")
+
+            eval_bs = 4
+            pred_actions = []
+            num_batches = (len(ep_frames) + eval_bs - 1) // eval_bs
+            batch_pbar = tqdm(range(0, len(ep_frames), eval_bs), total=num_batches, desc=f"  🎬 Ep {ep_id} Rollout (4-Cam Batched)", leave=False)
+            for b_start in batch_pbar:
+                chunk = ep_frames[b_start : b_start + eval_bs]
+                acts_chunk = model_engine.predict_actions_batch(chunk)
+                for a in acts_chunk:
+                    pred_actions.append(parse_action_row(a))
             pred_actions = np.stack(pred_actions, axis=0)
 
         all_predictions[int(ep_id)] = pred_actions.tolist()
