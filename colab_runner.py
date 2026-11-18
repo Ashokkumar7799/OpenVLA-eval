@@ -556,11 +556,19 @@ def evaluate_episodes(model_engine, mj_model, mj_data, df, episode_indices, mult
         # Video path for visualization
         is_ood = bool(multi_cam_reader is not None and getattr(multi_cam_reader, "ood_red", False))
         suffix = "_ood_red" if is_ood else ""
-        if is_ood and len(ep_frames) > 100:
+        if is_ood and len(ep_frames) > 0:
             os.makedirs(output_dir, exist_ok=True)
-            ood_chk_path = os.path.join(output_dir, f"ood_red_input_ep{ep_id}_frame100.jpg")
-            Image.fromarray(ep_frames[100]).save(ood_chk_path)
-            print(f"  🎨 Saved OOD Red input preview: {ood_chk_path}")
+            if len(ep_frames) > 100:
+                ood_chk_path = os.path.join(output_dir, f"ood_red_input_ep{ep_id}_frame100.jpg")
+                Image.fromarray(ep_frames[100]).save(ood_chk_path)
+            if save_video:
+                try:
+                    import mediapy as media
+                    ood_in_vid = os.path.join(output_dir, f"ood_red_input_ep{ep_id}.mp4")
+                    media.write_video(ood_in_vid, ep_frames, fps=50)
+                    print(f"  🎨 Saved full OOD Red 4-cam input video: {ood_in_vid}")
+                except Exception as e:
+                    print(f"  Note saving OOD input video: {e}")
         v_path = os.path.join(output_dir, f"eval_episode_{ep_id}{suffix}.mp4") if save_video else None
 
         # Physical rollout in MuJoCo
@@ -641,6 +649,19 @@ def main():
 
     # Initialize MuJoCo
     mj_model, mj_data = init_mujoco()
+
+    # If OOD Red Stress Test is enabled, recolor MuJoCo screwdriver & cup to matching RED
+    if args.ood_red:
+        import mujoco
+        for mat_name, rgba in [
+            ("screwdriver_handle", [0.88, 0.14, 0.14, 1.0]),
+            ("cup_blue_outer", [0.82, 0.12, 0.12, 1.0]),
+            ("cup_sponge_yellow", [0.78, 0.20, 0.20, 1.0]),
+        ]:
+            mid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_MATERIAL, mat_name)
+            if mid != -1:
+                mj_model.mat_rgba[mid] = rgba
+        print("🎨 MuJoCo Digital Twin recolored to matching OOD RED (Red Screwdriver + Red Cup).")
 
     # Load splits
     with open(SPLITS_JSON, "r") as f:
