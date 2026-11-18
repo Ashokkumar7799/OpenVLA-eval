@@ -191,6 +191,12 @@ def run_simulation_rollout(model, data, action_sequence, initial_joint_state, gr
             renderer.update_scene(data, camera="overhead_cam")
             frames.append(renderer.render())
 
+    if renderer is not None:
+        try:
+            renderer.close()
+        except Exception:
+            pass
+
     if record_video and video_path and len(frames) > 0:
         try:
             import mediapy as media
