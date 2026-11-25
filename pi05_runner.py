@@ -328,9 +328,9 @@ def run_pi05_evaluation(args):
                     renderer.update_scene(data, camera="overhead_cam")
                     frames.append(renderer.render().copy())
 
-            # Step MuJoCo physics with action
+            # Step MuJoCo physics with action at exact 50 Hz (10 substeps * 0.002s = 0.020s)
             data.ctrl[:14] = map_action_to_ctrl(act)
-            for _ in range(4):
+            for _ in range(10):
                 mujoco.mj_step(model, data)
 
             if screw_body_id != -1:
