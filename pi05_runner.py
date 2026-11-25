@@ -21,6 +21,7 @@ import time
 import argparse
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from PIL import Image
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -237,7 +238,8 @@ def run_pi05_evaluation(args):
         renderer = mujoco.Renderer(model, height=480, width=640)
         l1_errors = []
 
-        for f_idx in range(total_steps):
+        pbar = tqdm(range(total_steps), desc=f"🤖 MuJoCo Rollout Ep {ep_id}", unit="frame")
+        for f_idx in pbar:
             gt_act = gt_actions[min(f_idx, len(gt_actions)-1)]
 
             if policy is not None:
@@ -316,6 +318,10 @@ def run_pi05_evaluation(args):
                 cz = data.xpos[screw_body_id][2]
                 if cz > max_z:
                     max_z = cz
+
+            cur_lift = (max_z - initial_z) * 100.0
+            last_err = l1_errors[-1] if l1_errors else 0.0
+            pbar.set_postfix({"lift_cm": f"{cur_lift:.1f}", "l1_err": f"{last_err:.3f}"})
 
         elapsed = time.time() - t_start
         lift_height_cm = (max_z - initial_z) * 100.0
