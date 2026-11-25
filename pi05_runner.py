@@ -62,6 +62,10 @@ def scale_gripper(a_grip):
     norm = np.clip(a_grip / 0.69, 0.0, 1.0)
     return 0.002 + norm * (0.037 - 0.002)
 
+def mujoco_to_gripper_rad(pos_m):
+    norm = np.clip((pos_m - 0.002) / (0.037 - 0.002), 0.0, 1.0)
+    return float(norm * 0.69)
+
 def map_action_to_ctrl(act):
     ctrl = np.zeros(14, dtype=np.float32)
     ctrl[0:6] = act[0:6]
@@ -238,71 +242,86 @@ def run_pi05_evaluation(args):
         renderer = mujoco.Renderer(model, height=480, width=640)
         l1_errors = []
 
+        chunk_size = getattr(policy.config, "n_action_steps", 50) if policy is not None else 1
+        action_buffer = []
+
         pbar = tqdm(range(total_steps), desc=f"🤖 MuJoCo Rollout Ep {ep_id}", unit="frame")
         for f_idx in pbar:
             gt_act = gt_actions[min(f_idx, len(gt_actions)-1)]
 
             if policy is not None:
-                # 1. Capture 4 camera views from Digital Twin for policy input
-                renderer.update_scene(data, camera="overhead_cam")
-                cam_high_img = renderer.render().copy()
-                if renderer and args.save_video:
-                    frames.append(cam_high_img)
+                if len(action_buffer) == 0:
+                    # 1. Capture 4 camera views from Digital Twin for policy input
+                    renderer.update_scene(data, camera="overhead_cam")
+                    cam_high_img = renderer.render().copy()
 
-                renderer.update_scene(data, camera="worms_eye_cam")
-                cam_low_img = renderer.render().copy()
+                    renderer.update_scene(data, camera="worms_eye_cam")
+                    cam_low_img = renderer.render().copy()
 
-                renderer.update_scene(data, camera="wrist_cam_left")
-                cam_wl_img = renderer.render().copy()
+                    renderer.update_scene(data, camera="wrist_cam_left")
+                    cam_wl_img = renderer.render().copy()
 
-                renderer.update_scene(data, camera="wrist_cam_right")
-                cam_wr_img = renderer.render().copy()
+                    renderer.update_scene(data, camera="wrist_cam_right")
+                    cam_wr_img = renderer.render().copy()
 
-                # 2. Extract current 14-DoF proprioceptive joint state
-                curr_state = np.zeros(14, dtype=np.float32)
-                curr_state[0:6] = data.qpos[0:6]
-                curr_state[6] = float(data.qpos[6] + data.qpos[7])
-                curr_state[7:13] = data.qpos[8:14]
-                curr_state[13] = float(data.qpos[14] + data.qpos[15])
+                    # 2. Extract current 14-DoF proprioceptive joint state with calibrated gripper conversion
+                    curr_state = np.zeros(14, dtype=np.float32)
+                    curr_state[0:6] = data.qpos[0:6]
+                    curr_state[6] = mujoco_to_gripper_rad(data.qpos[6])
+                    curr_state[7:13] = data.qpos[8:14]
+                    curr_state[13] = mujoco_to_gripper_rad(data.qpos[14])
 
-                # 3. Build observation batch
-                raw_obs = {
-                    "observation.images.cam_high": torch.from_numpy(cam_high_img).permute(2, 0, 1).unsqueeze(0),
-                    "observation.images.cam_low": torch.from_numpy(cam_low_img).permute(2, 0, 1).unsqueeze(0),
-                    "observation.images.cam_left_wrist": torch.from_numpy(cam_wl_img).permute(2, 0, 1).unsqueeze(0),
-                    "observation.images.cam_right_wrist": torch.from_numpy(cam_wr_img).permute(2, 0, 1).unsqueeze(0),
-                    "observation.state": torch.from_numpy(curr_state).unsqueeze(0),
-                    "task": [args.task],
-                    "complementary_data": {
-                        "task": [args.task]
+                    # 3. Build observation batch
+                    raw_obs = {
+                        "observation.images.cam_high": torch.from_numpy(cam_high_img).permute(2, 0, 1).unsqueeze(0),
+                        "observation.images.cam_low": torch.from_numpy(cam_low_img).permute(2, 0, 1).unsqueeze(0),
+                        "observation.images.cam_left_wrist": torch.from_numpy(cam_wl_img).permute(2, 0, 1).unsqueeze(0),
+                        "observation.images.cam_right_wrist": torch.from_numpy(cam_wr_img).permute(2, 0, 1).unsqueeze(0),
+                        "observation.state": torch.from_numpy(curr_state).unsqueeze(0),
+                        "task": [args.task],
+                        "complementary_data": {
+                            "task": [args.task]
+                        }
                     }
-                }
 
-                if preprocess:
-                    processed_obs = preprocess(raw_obs)
-                else:
-                    processed_obs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in raw_obs.items()}
-
-                with torch.no_grad():
-                    action_out = policy.select_action(processed_obs)
-
-                if postprocess:
-                    pred_act = postprocess(action_out)
-                    if isinstance(pred_act, dict):
-                        pred_act = pred_act.get("action", pred_act)
-                    if isinstance(pred_act, torch.Tensor):
-                        pred_act = pred_act.cpu().numpy().squeeze()
+                    if preprocess:
+                        processed_obs = preprocess(raw_obs)
                     else:
-                        pred_act = np.array(pred_act).squeeze()
-                else:
-                    if isinstance(action_out, torch.Tensor):
-                        pred_act = action_out.cpu().numpy().squeeze()
-                    else:
-                        pred_act = np.array(action_out).squeeze()
+                        processed_obs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in raw_obs.items()}
 
-                act = np.clip(pred_act[:14], ACTION_MIN, ACTION_MAX)
+                    with torch.no_grad():
+                        if hasattr(policy, "predict_action_chunk"):
+                            action_out = policy.predict_action_chunk(processed_obs)
+                        else:
+                            action_out = policy.select_action(processed_obs)
+
+                    if postprocess:
+                        pred_act = postprocess(action_out)
+                        if isinstance(pred_act, dict):
+                            pred_act = pred_act.get("action", pred_act)
+                        if isinstance(pred_act, torch.Tensor):
+                            pred_act = pred_act.cpu().numpy()
+                        else:
+                            pred_act = np.array(pred_act)
+                    else:
+                        if isinstance(action_out, torch.Tensor):
+                            pred_act = action_out.cpu().numpy()
+                        else:
+                            pred_act = np.array(action_out)
+
+                    pred_act = pred_act.squeeze()
+                    if pred_act.ndim == 1:
+                        pred_act = pred_act[None, :]
+                    action_buffer = [row[:14] for row in pred_act[:chunk_size]]
+
+                act = action_buffer.pop(0)
+                act = np.clip(act[:14], ACTION_MIN, ACTION_MAX)
                 l1_err = float(np.mean(np.abs(act - gt_act)))
                 l1_errors.append(l1_err)
+
+                if renderer and args.save_video:
+                    renderer.update_scene(data, camera="overhead_cam")
+                    frames.append(renderer.render().copy())
             else:
                 act = gt_act
                 if renderer and args.save_video:
@@ -324,14 +343,14 @@ def run_pi05_evaluation(args):
             pbar.set_postfix({"lift_cm": f"{cur_lift:.1f}", "l1_err": f"{last_err:.3f}"})
 
         elapsed = time.time() - t_start
-        lift_height_cm = (max_z - initial_z) * 100.0
-        lift_success = lift_height_cm >= 5.0
+        lift_height_cm = float((max_z - initial_z) * 100.0)
+        lift_success = bool(lift_height_cm >= 5.0)
 
         # Cup placement check
         final_screw_pos = data.xpos[screw_body_id] if screw_body_id != -1 else np.zeros(3)
         cup_pos = model.body_pos[cup_body_id] if cup_body_id != -1 else np.array([-0.12, 0.19, 0.001])
         cup_dist_cm = float(np.linalg.norm(final_screw_pos[:2] - cup_pos[:2]) * 100.0)
-        cup_success = cup_dist_cm < 10.0 and final_screw_pos[2] < 0.16
+        cup_success = bool(cup_dist_cm < 10.0 and final_screw_pos[2] < 0.16)
 
         mean_l1 = float(np.mean(l1_errors)) if l1_errors else 0.0
         mode_str = "🤖 Pi0.5 Autonomous Policy" if policy is not None else "📋 Human Ground-Truth Replay"
@@ -347,15 +366,15 @@ def run_pi05_evaluation(args):
             renderer.close()
 
         results.append({
-            "episode": ep_id,
+            "episode": int(ep_id),
             "mode": "autonomous" if policy is not None else "ground_truth",
-            "ood_red": args.ood_red,
-            "rollout_time_sec": elapsed,
-            "lift_success": lift_success,
-            "lift_height_cm": lift_height_cm,
-            "cup_success": cup_success,
-            "cup_dist_cm": cup_dist_cm,
-            "mean_l1_error_rad": mean_l1
+            "ood_red": bool(args.ood_red),
+            "rollout_time_sec": float(elapsed),
+            "lift_success": bool(lift_success),
+            "lift_height_cm": float(lift_height_cm),
+            "cup_success": bool(cup_success),
+            "cup_dist_cm": float(cup_dist_cm),
+            "mean_l1_error_rad": float(mean_l1)
         })
 
     res_suffix = "_ood_red" if args.ood_red else ""
