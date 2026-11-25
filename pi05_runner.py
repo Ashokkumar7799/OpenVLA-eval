@@ -97,6 +97,8 @@ def run_pi05_training(args):
         "--dataset.repo_id=lerobot/aloha_static_screw_driver",
         "--policy.type=pi05",
         "--policy.pretrained_path=lerobot/pi05_base",
+        "--policy.push_to_hub=false",
+        "--policy.repo_id=local/pi05_aloha_expert",
         '--policy.normalization_mapping={"ACTION":"MEAN_STD","STATE":"MEAN_STD","VISUAL":"IDENTITY"}',
         "--policy.freeze_vision_encoder=true",
         "--policy.train_expert_only=true",
