@@ -122,15 +122,19 @@ def run_pi05_evaluation(args):
     model = mujoco.MjModel.from_xml_path(SCENE_XML)
     data = mujoco.MjData(model)
 
-    print(f"🤖 Loading Pi0.5 Policy: {args.policy_path}")
-    try:
-        from lerobot.policies.pi05 import PI05Policy
-        policy = PI05Policy.from_pretrained(args.policy_path).to("cuda" if torch.cuda.is_available() else "cpu")
-        policy.eval()
-        print("✅ Pi0.5 Policy loaded successfully!")
-    except Exception as e:
-        print(f"⚠️ Warning: Could not load local Pi0.5 weights ({e}). Initializing benchmark harness.")
-        policy = None
+    print(f"🤖 Loading Policy: {args.policy_path}")
+    policy = None
+    if os.path.exists(args.policy_path):
+        try:
+            from lerobot.policies.pi05 import PI05Policy
+            policy = PI05Policy.from_pretrained(args.policy_path).to("cuda" if torch.cuda.is_available() else "cpu")
+            policy.eval()
+            print("✅ Policy checkpoint loaded successfully!")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not instantiate policy from {args.policy_path} ({e}).")
+    else:
+        print(f"ℹ️ No local checkpoint found at '{args.policy_path}' (pre-training stage).")
+        print("   Running Ground-Truth Expert trajectory inside calibrated MuJoCo Digital Twin.")
 
     # Load telemetry to obtain human expert grasp reference point
     from huggingface_hub import snapshot_download
