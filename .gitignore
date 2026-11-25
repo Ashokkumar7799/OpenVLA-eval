@@ -43,4 +43,8 @@ Thumbs.db
 *.env
 *token*.txt
 
+# Scratch debug artifacts
+scratch/
+
+
 
