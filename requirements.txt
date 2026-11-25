@@ -1,19 +1,19 @@
 # ==============================================================================
-# Complete Physical AI Foundation Model Stack (Pi0.5, OpenVLA, MuJoCo, Aloha)
+# Pi0.5, LeRobot & MuJoCo Digital Twin Dependencies
 # ==============================================================================
 
 # 1. LeRobot with Pi0 / Pi0.5 Continuous Flow-Matching Policies (Physical Intelligence)
+# Note: lerobot[pi] automatically installs its compatible transformers and huggingface-hub
 lerobot[pi] @ git+https://github.com/huggingface/lerobot.git
 
 # 2. Physics Engine & Headless Digital Twin
 mujoco>=3.1.0
 
-# 3. Vision-Language-Action (VLA) Backbone & Quantized LoRA Tuning
-transformers>=4.40.1,<5.0.0
-timm==0.9.10
+# 3. Model Training & Parameter Efficient Tuning
 accelerate>=0.28.0
 bitsandbytes>=0.46.1
 peft>=0.10.0
+timm==0.9.10
 einops
 sentencepiece
 protobuf
@@ -29,4 +29,3 @@ pandas
 pyarrow
 matplotlib
 tqdm
-huggingface_hub

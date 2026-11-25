@@ -1,0 +1,17 @@
+# Legacy OpenVLA-7B Environment Stack
+# OpenVLA requires older transformers 4.40-4.44 and huggingface-hub<1.0
+transformers>=4.40.1,<4.45.0
+timm==0.9.10
+accelerate
+bitsandbytes>=0.46.1
+peft
+huggingface_hub<1.0
+mujoco>=3.1.0
+mediapy
+opencv-python
+pandas
+pyarrow
+matplotlib
+einops
+sentencepiece
+protobuf
