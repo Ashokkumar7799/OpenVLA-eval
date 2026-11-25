@@ -19,7 +19,7 @@ sentencepiece
 protobuf
 
 # 4. Computer Vision, Video Rendering & Simulation Rollout
-av
+av>=15.0.0,<17.0.0
 mediapy
 opencv-python
 pillow

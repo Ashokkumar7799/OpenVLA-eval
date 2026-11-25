@@ -186,15 +186,8 @@ def run_pi05_evaluation(args):
         renderer = mujoco.Renderer(model, height=480, width=640) if args.save_video else None
 
         for c_idx in range(num_chunks):
-            # Render camera for policy observation
-            if renderer:
-                renderer.update_scene(data, camera="cam_high")
-                cam_img = renderer.render()
-                frames.append(cam_img)
-
             # In Pi0.5: Predict 50 continuous actions in 1 single forward pass (~80 ms)
             if policy is not None:
-                # Forward pass through Pi0.5 flow matching head
                 pass
 
             # Step MuJoCo physics across chunk
@@ -204,6 +197,10 @@ def run_pi05_evaluation(args):
                 data.ctrl[:14] = map_action_to_ctrl(act)
                 for _ in range(4):
                     mujoco.mj_step(model, data)
+
+                if renderer:
+                    renderer.update_scene(data, camera="overhead_cam")
+                    frames.append(renderer.render())
 
                 if screw_body_id != -1:
                     cz = data.xpos[screw_body_id][2]
