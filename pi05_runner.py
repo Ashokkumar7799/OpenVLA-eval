@@ -129,6 +129,7 @@ def run_pi05_evaluation(args):
     import torch
 
     os.makedirs(args.output_dir, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"\n🔍 Loading Calibrated MuJoCo Digital Twin: {SCENE_XML}")
     model = mujoco.MjModel.from_xml_path(SCENE_XML)
@@ -136,16 +137,26 @@ def run_pi05_evaluation(args):
 
     print(f"🤖 Loading Policy: {args.policy_path}")
     policy = None
+    preprocess, postprocess = None, None
+
     if os.path.exists(args.policy_path):
         try:
             from lerobot.policies.pi05 import PI05Policy
-            policy = PI05Policy.from_pretrained(args.policy_path).to("cuda" if torch.cuda.is_available() else "cpu")
+            from lerobot.policies.factory import make_pre_post_processors
+
+            policy = PI05Policy.from_pretrained(args.policy_path).to(device)
             policy.eval()
-            print("✅ Policy checkpoint loaded successfully!")
+            preprocess, postprocess = make_pre_post_processors(
+                policy.config,
+                args.policy_path,
+                preprocessor_overrides={"device_processor": {"device": str(device)}}
+            )
+            print("✅ Policy checkpoint & pre/post-processors loaded successfully into GPU memory!")
         except Exception as e:
             print(f"⚠️ Warning: Could not instantiate policy from {args.policy_path} ({e}).")
+            policy = None
     else:
-        print(f"ℹ️ No local checkpoint found at '{args.policy_path}' (pre-training stage).")
+        print(f"ℹ️ No local checkpoint found at '{args.policy_path}'.")
         print("   Running Ground-Truth Expert trajectory inside calibrated MuJoCo Digital Twin.")
 
     # Load telemetry to obtain human expert grasp reference point
@@ -171,6 +182,10 @@ def run_pi05_evaluation(args):
         gx, gy = compute_episode_grasp_point(model, data, gt_actions)
         print(f"\n--- Episode {ep_id} (Grasp Origin: X={gx:.4f}, Y={gy:.4f}) ---")
 
+        # Reset policy action buffer and visual memory for clean episode rollout
+        if policy is not None and hasattr(policy, "reset"):
+            policy.reset()
+
         # Initialize Simulation
         mujoco.mj_resetData(model, data)
         data.qpos[0:6] = initial_state[0:6]
@@ -193,35 +208,77 @@ def run_pi05_evaluation(args):
         max_z = initial_z
         t_start = time.time()
 
-        # Action chunking loop: 400 frames executed in 50-step chunks
         total_steps = 400
-        chunk_size = 50
-        num_chunks = total_steps // chunk_size
-
         frames = []
-        renderer = mujoco.Renderer(model, height=480, width=640) if args.save_video else None
+        renderer = mujoco.Renderer(model, height=480, width=640)
+        l1_errors = []
 
-        for c_idx in range(num_chunks):
-            # In Pi0.5: Predict 50 continuous actions in 1 single forward pass (~80 ms)
+        for f_idx in range(total_steps):
+            gt_act = gt_actions[min(f_idx, len(gt_actions)-1)]
+
             if policy is not None:
-                pass
+                # 1. Capture 4 camera views from Digital Twin for policy input
+                renderer.update_scene(data, camera="overhead_cam")
+                cam_high_img = renderer.render().copy()
+                if renderer and args.save_video:
+                    frames.append(cam_high_img)
 
-            # Step MuJoCo physics across chunk
-            for step_in_chunk in range(chunk_size):
-                f_idx = c_idx * chunk_size + step_in_chunk
-                act = gt_actions[min(f_idx, len(gt_actions)-1)]
-                data.ctrl[:14] = map_action_to_ctrl(act)
-                for _ in range(4):
-                    mujoco.mj_step(model, data)
+                renderer.update_scene(data, camera="worms_eye_cam")
+                cam_low_img = renderer.render().copy()
 
-                if renderer:
+                renderer.update_scene(data, camera="wrist_cam_left")
+                cam_wl_img = renderer.render().copy()
+
+                renderer.update_scene(data, camera="wrist_cam_right")
+                cam_wr_img = renderer.render().copy()
+
+                # 2. Extract current 14-DoF proprioceptive joint state
+                curr_state = np.zeros(14, dtype=np.float32)
+                curr_state[0:6] = data.qpos[0:6]
+                curr_state[6] = float(data.qpos[6] + data.qpos[7])
+                curr_state[7:13] = data.qpos[8:14]
+                curr_state[13] = float(data.qpos[14] + data.qpos[15])
+
+                # 3. Build observation batch
+                raw_obs = {
+                    "observation.images.cam_high": torch.from_numpy(cam_high_img).permute(2, 0, 1),
+                    "observation.images.cam_low": torch.from_numpy(cam_low_img).permute(2, 0, 1),
+                    "observation.images.cam_left_wrist": torch.from_numpy(cam_wl_img).permute(2, 0, 1),
+                    "observation.images.cam_right_wrist": torch.from_numpy(cam_wr_img).permute(2, 0, 1),
+                    "observation.state": torch.from_numpy(curr_state),
+                }
+
+                if preprocess:
+                    processed_obs = preprocess(raw_obs)
+                else:
+                    processed_obs = {k: v.to(device) for k, v in raw_obs.items()}
+
+                with torch.no_grad():
+                    action_out = policy.select_action(processed_obs)
+
+                if postprocess:
+                    pred_act = postprocess(action_out).cpu().numpy().squeeze()
+                else:
+                    pred_act = action_out.cpu().numpy().squeeze()
+
+                act = np.clip(pred_act[:14], ACTION_MIN, ACTION_MAX)
+                l1_err = float(np.mean(np.abs(act - gt_act)))
+                l1_errors.append(l1_err)
+            else:
+                act = gt_act
+                if renderer and args.save_video:
                     renderer.update_scene(data, camera="overhead_cam")
-                    frames.append(renderer.render())
+                    frames.append(renderer.render().copy())
 
-                if screw_body_id != -1:
-                    cz = data.xpos[screw_body_id][2]
-                    if cz > max_z:
-                        max_z = cz
+            # Step MuJoCo physics with action
+            data.ctrl[:14] = map_action_to_ctrl(act)
+            for _ in range(4):
+                mujoco.mj_step(model, data)
+
+            if screw_body_id != -1:
+                cz = data.xpos[screw_body_id][2]
+                if cz > max_z:
+                    max_z = cz
 
         elapsed = time.time() - t_start
         lift_height_cm = (max_z - initial_z) * 100.0
@@ -233,8 +290,10 @@ def run_pi05_evaluation(args):
         cup_dist_cm = float(np.linalg.norm(final_screw_pos[:2] - cup_pos[:2]) * 100.0)
         cup_success = cup_dist_cm < 10.0 and final_screw_pos[2] < 0.16
 
-        print(f"⏱️ Episode Rollout Time: {elapsed:.2f} seconds (Action Chunking Speedup: ~60x faster than OpenVLA)")
-        print(f"📊 Results: Lift={lift_success} ({lift_height_cm:.1f} cm), Cup={cup_success} (Dist={cup_dist_cm:.1f} cm)")
+        mean_l1 = float(np.mean(l1_errors)) if l1_errors else 0.0
+        mode_str = "🤖 Pi0.5 Autonomous Policy" if policy is not None else "📋 Human Ground-Truth Replay"
+        print(f"\n{mode_str} Rollout Completed in {elapsed:.2f} seconds!")
+        print(f"📊 Results: Lift={lift_success} ({lift_height_cm:.1f} cm), Cup={cup_success} (Dist={cup_dist_cm:.1f} cm), Mean L1 Err={mean_l1:.4f} rad")
 
         if renderer and args.save_video:
             v_path = os.path.join(args.output_dir, f"eval_pi05_episode_{ep_id}.mp4")
@@ -245,11 +304,13 @@ def run_pi05_evaluation(args):
 
         results.append({
             "episode": ep_id,
+            "mode": "autonomous" if policy is not None else "ground_truth",
             "rollout_time_sec": elapsed,
             "lift_success": lift_success,
             "lift_height_cm": lift_height_cm,
             "cup_success": cup_success,
-            "cup_dist_cm": cup_dist_cm
+            "cup_dist_cm": cup_dist_cm,
+            "mean_l1_error_rad": mean_l1
         })
 
     out_json = os.path.join(args.output_dir, "pi05_benchmark_results.json")
