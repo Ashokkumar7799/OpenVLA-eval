@@ -21,6 +21,7 @@ __pycache__/
 *.png
 dataset_cache*/
 augmented_dataset/
+poc_assets/
 openvla_aloha_output/
 pi05_eval_output/
 

@@ -1,13 +1,32 @@
-# Physical AI Simulation, Rollout & Evaluation Stack
+# ==============================================================================
+# Complete Physical AI Foundation Model Stack (Pi0.5, OpenVLA, MuJoCo, Aloha)
+# ==============================================================================
+
+# 1. LeRobot with Pi0 / Pi0.5 Continuous Flow-Matching Policies (Physical Intelligence)
+lerobot[pi] @ git+https://github.com/huggingface/lerobot.git
+
+# 2. Physics Engine & Headless Digital Twin
 mujoco>=3.1.0
+
+# 3. Vision-Language-Action (VLA) Backbone & Quantized LoRA Tuning
 transformers>=4.40.1,<5.0.0
 timm==0.9.10
-accelerate
+accelerate>=0.28.0
 bitsandbytes>=0.46.1
-peft
-huggingface_hub
+peft>=0.10.0
+einops
+sentencepiece
+protobuf
+
+# 4. Computer Vision, Video Rendering & Simulation Rollout
 mediapy
 opencv-python
+pillow
+scipy
+
+# 5. Robotics Telemetry, Data Tables & Benchmarking
 pandas
 pyarrow
 matplotlib
+tqdm
+huggingface_hub

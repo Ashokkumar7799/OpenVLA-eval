@@ -6,11 +6,10 @@
 set -e
 
 echo "================================================================="
-echo "📦 INSTALLING LEROBOT & PI0.5 DEPENDENCIES"
+echo "📦 INSTALLING ALL LEROBOT, PI0.5 & MUJOCO DEPENDENCIES"
 echo "================================================================="
 pip install -q --upgrade pip
-pip install -q "lerobot[pi]@git+https://github.com/huggingface/lerobot.git"
-pip install -q mujoco mediapy opencv-python pandas pyarrow matplotlib
+pip install -r requirements.txt
 
 echo "================================================================="
 echo "🔍 VERIFYING GPU & ENVIRONMENT"
