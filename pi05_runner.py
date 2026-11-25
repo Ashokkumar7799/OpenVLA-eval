@@ -139,24 +139,33 @@ def run_pi05_evaluation(args):
     policy = None
     preprocess, postprocess = None, None
 
-    if os.path.exists(args.policy_path):
+    policy_path = args.policy_path
+    if not os.path.exists(policy_path):
+        # Auto-detect latest numeric checkpoint if exact path not found (e.g. 001000/pretrained_model)
+        candidates = glob.glob(os.path.join(args.output_dir, "**", "pretrained_model"), recursive=True)
+        if candidates:
+            candidates.sort()
+            policy_path = candidates[-1]
+            print(f"ℹ️ Auto-detected latest checkpoint: {policy_path}")
+
+    if os.path.exists(policy_path):
         try:
             from lerobot.policies.pi05 import PI05Policy
             from lerobot.policies.factory import make_pre_post_processors
 
-            policy = PI05Policy.from_pretrained(args.policy_path).to(device)
+            policy = PI05Policy.from_pretrained(policy_path).to(device)
             policy.eval()
             preprocess, postprocess = make_pre_post_processors(
                 policy.config,
-                args.policy_path,
+                policy_path,
                 preprocessor_overrides={"device_processor": {"device": str(device)}}
             )
             print("✅ Policy checkpoint & pre/post-processors loaded successfully into GPU memory!")
         except Exception as e:
-            print(f"⚠️ Warning: Could not instantiate policy from {args.policy_path} ({e}).")
+            print(f"⚠️ Warning: Could not instantiate policy from {policy_path} ({e}).")
             policy = None
     else:
-        print(f"ℹ️ No local checkpoint found at '{args.policy_path}'.")
+        print(f"ℹ️ No local checkpoint found at '{policy_path}'.")
         print("   Running Ground-Truth Expert trajectory inside calibrated MuJoCo Digital Twin.")
 
     # Load telemetry to obtain human expert grasp reference point
