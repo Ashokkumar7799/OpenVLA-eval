@@ -134,7 +134,13 @@ def run_pi05_evaluation(args):
 
     # Load telemetry to obtain human expert grasp reference point
     from huggingface_hub import snapshot_download
-    repo_dir = snapshot_download("lerobot/aloha_static_screw_driver", allow_patterns=["*.parquet", "meta/**"])
+    hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+    repo_dir = snapshot_download(
+        "lerobot/aloha_static_screw_driver",
+        repo_type="dataset",
+        allow_patterns=["*.parquet", "meta/**"],
+        token=hf_token
+    )
     parquet_files = glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True)
     df = pd.concat([pd.read_parquet(p) for p in parquet_files if "meta" not in p], ignore_index=True)
 
