@@ -20,7 +20,9 @@ __pycache__/
 *.mp4
 *.png
 dataset_cache*/
+augmented_dataset/
 openvla_aloha_output/
+pi05_eval_output/
 
 # Test scratch images
 test_*.jpg
