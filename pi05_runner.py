@@ -52,6 +52,9 @@ def parse_args():
     parser.add_argument("--save_video", action="store_true", help="Record and save MP4 rollout video")
     parser.add_argument("--output_dir", type=str, default="./outputs/pi05_aloha_expert", help="Output directory")
     parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face API token")
+    parser.add_argument("--task", type=str,
+                        default="Pick up the screwdriver with the right arm, hand it over to the left arm then place it into the cup.",
+                        help="Natural language task instruction for Pi0.5 VLA policy")
     return parser.parse_args()
 
 def scale_gripper(a_grip):
@@ -262,25 +265,38 @@ def run_pi05_evaluation(args):
 
                 # 3. Build observation batch
                 raw_obs = {
-                    "observation.images.cam_high": torch.from_numpy(cam_high_img).permute(2, 0, 1),
-                    "observation.images.cam_low": torch.from_numpy(cam_low_img).permute(2, 0, 1),
-                    "observation.images.cam_left_wrist": torch.from_numpy(cam_wl_img).permute(2, 0, 1),
-                    "observation.images.cam_right_wrist": torch.from_numpy(cam_wr_img).permute(2, 0, 1),
-                    "observation.state": torch.from_numpy(curr_state),
+                    "observation.images.cam_high": torch.from_numpy(cam_high_img).permute(2, 0, 1).unsqueeze(0),
+                    "observation.images.cam_low": torch.from_numpy(cam_low_img).permute(2, 0, 1).unsqueeze(0),
+                    "observation.images.cam_left_wrist": torch.from_numpy(cam_wl_img).permute(2, 0, 1).unsqueeze(0),
+                    "observation.images.cam_right_wrist": torch.from_numpy(cam_wr_img).permute(2, 0, 1).unsqueeze(0),
+                    "observation.state": torch.from_numpy(curr_state).unsqueeze(0),
+                    "task": [args.task],
+                    "complementary_data": {
+                        "task": [args.task]
+                    }
                 }
 
                 if preprocess:
                     processed_obs = preprocess(raw_obs)
                 else:
-                    processed_obs = {k: v.to(device) for k, v in raw_obs.items()}
+                    processed_obs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in raw_obs.items()}
 
                 with torch.no_grad():
                     action_out = policy.select_action(processed_obs)
 
                 if postprocess:
-                    pred_act = postprocess(action_out).cpu().numpy().squeeze()
+                    pred_act = postprocess(action_out)
+                    if isinstance(pred_act, dict):
+                        pred_act = pred_act.get("action", pred_act)
+                    if isinstance(pred_act, torch.Tensor):
+                        pred_act = pred_act.cpu().numpy().squeeze()
+                    else:
+                        pred_act = np.array(pred_act).squeeze()
                 else:
-                    pred_act = action_out.cpu().numpy().squeeze()
+                    if isinstance(action_out, torch.Tensor):
+                        pred_act = action_out.cpu().numpy().squeeze()
+                    else:
+                        pred_act = np.array(action_out).squeeze()
 
                 act = np.clip(pred_act[:14], ACTION_MIN, ACTION_MAX)
                 l1_err = float(np.mean(np.abs(act - gt_act)))
