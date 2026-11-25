@@ -12,6 +12,9 @@ import os
 if "MUJOCO_GL" not in os.environ and "DISPLAY" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
 import sys
+import shutil
+import shlex
+import subprocess
 import glob
 import json
 import time
