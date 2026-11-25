@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for single 24GB L4 GPU (default: 8)")
     parser.add_argument("--ood_red", action="store_true", help="OOD Stress Test: Recolors tool & cup to RED")
     parser.add_argument("--save_video", action="store_true", help="Record and save MP4 rollout video")
-    parser.add_argument("--output_dir", type=str, default="./pi05_eval_output", help="Evaluation output dir")
+    parser.add_argument("--output_dir", type=str, default="./outputs/pi05_aloha_expert", help="Output directory")
     parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face API token")
     return parser.parse_args()
 
@@ -87,13 +87,14 @@ def compute_episode_grasp_point(model, data, actions):
 
 def run_pi05_training(args):
     """Launches LeRobot Pi0.5 fine-tuning sized for a single 24GB L4 GPU."""
-    import subprocess
+    import shutil
+    import shlex
     cmd = [
         "lerobot-train",
         "--dataset.repo_id=lerobot/aloha_static_screw_driver",
         "--policy.type=pi05",
         "--policy.pretrained_path=lerobot/pi05_base",
-        "--policy.normalization_mapping={'ACTION': 'MEAN_STD', 'STATE': 'MEAN_STD', 'VISUAL': 'IDENTITY'}",
+        '--policy.normalization_mapping={"ACTION":"MEAN_STD","STATE":"MEAN_STD","VISUAL":"IDENTITY"}',
         "--policy.freeze_vision_encoder=true",
         "--policy.train_expert_only=true",
         "--policy.gradient_checkpointing=true",
@@ -106,9 +107,15 @@ def run_pi05_training(args):
         f"--steps={args.steps}",
         "--save_freq=1000"
     ]
+    train_bin = shutil.which("lerobot-train")
+    if train_bin is None:
+        cmd = [sys.executable, "-m", "lerobot.scripts.train"] + cmd[1:]
+    else:
+        cmd[0] = train_bin
+
     print(f"\n🚀 Launching LeRobot Pi0.5 Fine-Tuning on single 24GB GPU...")
-    print(f"Command: {' '.join(cmd)}")
-    subprocess.run(" ".join(cmd), shell=True, check=True)
+    print(f"Command: {shlex.join(cmd)}")
+    subprocess.run(cmd, check=True)
 
 def run_pi05_evaluation(args):
     """Evaluates Pi0.5 policy inside calibrated MuJoCo Digital Twin with 50 Hz Action Chunking."""
