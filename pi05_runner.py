@@ -135,20 +135,32 @@ def run_pi05_evaluation(args):
     model = mujoco.MjModel.from_xml_path(SCENE_XML)
     data = mujoco.MjData(model)
 
+    if args.ood_red:
+        for mat_name, rgba in [
+            ("screwdriver_handle", [0.88, 0.14, 0.14, 1.0]),
+            ("cup_blue_outer", [0.82, 0.12, 0.12, 1.0]),
+            ("cup_sponge_yellow", [0.78, 0.20, 0.20, 1.0]),
+        ]:
+            mid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, mat_name)
+            if mid != -1:
+                model.mat_rgba[mid] = rgba
+        print("🎨 MuJoCo Digital Twin recolored to matching OOD RED (Red Screwdriver + Red Cup).")
+
     print(f"🤖 Loading Policy: {args.policy_path}")
     policy = None
     preprocess, postprocess = None, None
 
     policy_path = args.policy_path
-    if not os.path.exists(policy_path):
-        # Auto-detect latest numeric checkpoint if exact path not found (e.g. 001000/pretrained_model)
+    if not os.path.exists(policy_path) and not ("/" in policy_path and not policy_path.startswith((".", "/"))):
+        # Auto-detect latest numeric checkpoint if exact path not found (e.g. 002000/pretrained_model)
         candidates = glob.glob(os.path.join(args.output_dir, "**", "pretrained_model"), recursive=True)
         if candidates:
             candidates.sort()
             policy_path = candidates[-1]
             print(f"ℹ️ Auto-detected latest checkpoint: {policy_path}")
 
-    if os.path.exists(policy_path):
+    is_hf_repo = "/" in policy_path and not os.path.exists(policy_path) and not policy_path.startswith((".", "/"))
+    if os.path.exists(policy_path) or is_hf_repo:
         try:
             from lerobot.policies.pi05 import PI05Policy
             from lerobot.policies.factory import make_pre_post_processors
@@ -160,12 +172,12 @@ def run_pi05_evaluation(args):
                 policy_path,
                 preprocessor_overrides={"device_processor": {"device": str(device)}}
             )
-            print("✅ Policy checkpoint & pre/post-processors loaded successfully into GPU memory!")
+            print(f"✅ Policy checkpoint & pre/post-processors loaded successfully from '{policy_path}'!")
         except Exception as e:
             print(f"⚠️ Warning: Could not instantiate policy from {policy_path} ({e}).")
             policy = None
     else:
-        print(f"ℹ️ No local checkpoint found at '{policy_path}'.")
+        print(f"ℹ️ No local checkpoint or repo found at '{policy_path}'.")
         print("   Running Ground-Truth Expert trajectory inside calibrated MuJoCo Digital Twin.")
 
     # Load telemetry to obtain human expert grasp reference point
@@ -304,8 +316,9 @@ def run_pi05_evaluation(args):
         print(f"\n{mode_str} Rollout Completed in {elapsed:.2f} seconds!")
         print(f"📊 Results: Lift={lift_success} ({lift_height_cm:.1f} cm), Cup={cup_success} (Dist={cup_dist_cm:.1f} cm), Mean L1 Err={mean_l1:.4f} rad")
 
+        ood_suffix = "_ood_red" if args.ood_red else ""
         if renderer and args.save_video:
-            v_path = os.path.join(args.output_dir, f"eval_pi05_episode_{ep_id}.mp4")
+            v_path = os.path.join(args.output_dir, f"eval_pi05_episode_{ep_id}{ood_suffix}.mp4")
             import mediapy as media
             media.write_video(v_path, frames, fps=50)
             print(f"🎥 Saved rollout video -> {v_path}")
@@ -314,6 +327,7 @@ def run_pi05_evaluation(args):
         results.append({
             "episode": ep_id,
             "mode": "autonomous" if policy is not None else "ground_truth",
+            "ood_red": args.ood_red,
             "rollout_time_sec": elapsed,
             "lift_success": lift_success,
             "lift_height_cm": lift_height_cm,
@@ -322,7 +336,8 @@ def run_pi05_evaluation(args):
             "mean_l1_error_rad": mean_l1
         })
 
-    out_json = os.path.join(args.output_dir, "pi05_benchmark_results.json")
+    res_suffix = "_ood_red" if args.ood_red else ""
+    out_json = os.path.join(args.output_dir, f"pi05_benchmark_results{res_suffix}.json")
     with open(out_json, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\n📋 Benchmark results saved to: {out_json}")
