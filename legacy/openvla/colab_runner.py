@@ -44,9 +44,9 @@ except ImportError:
 
 
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SCENE_XML = os.path.join(SCRIPT_DIR, "mujoco_menagerie", "aloha", "scene_with_screwdriver.xml")
-SPLITS_JSON = os.path.join(SCRIPT_DIR, "dataset_splits.json")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SCENE_XML = os.path.join(REPO_ROOT, "mujoco_menagerie", "aloha", "scene_with_screwdriver.xml")
+SPLITS_JSON = os.path.join(REPO_ROOT, "configs", "dataset_splits.json")
 
 ACTION_MIN = np.array([
     -0.0276, -0.9986,  0.9311, -0.4126, -1.1950, -0.2286, -0.0092,

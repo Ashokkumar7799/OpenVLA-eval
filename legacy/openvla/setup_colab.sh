@@ -4,7 +4,7 @@ set -e
 echo "================================================================="
 echo "📦 INSTALLING ALL OPENVLA & MUJOCO DEPENDENCIES"
 echo "================================================================="
-pip install -q -r requirements.txt
+pip install -q -r requirements_openvla.txt
 
 echo "================================================================="
 echo "🚀 LAUNCHING OPENVLA EVALUATION ON L4 GPU"

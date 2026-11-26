@@ -9,10 +9,14 @@ import numpy as np
 import pandas as pd
 import mujoco
 
-PARQUET_FILE = r"E:\mediapipe\robotics_datasets\aloha_static_screw_driver\data\chunk-000\file-000.parquet"
-SCENE_XML = r"E:\mediapipe\physical_ai_eval\mujoco_menagerie\aloha\scene_with_screwdriver.xml"
-SPLITS_JSON = r"E:\mediapipe\physical_ai_eval\dataset_splits.json"
-OUTPUT_REPORT = r"E:\mediapipe\physical_ai_eval\baseline_benchmark_report.json"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PARQUET_FILE = os.environ.get(
+    "ALOHA_PARQUET_FILE",
+    os.path.join(os.path.dirname(REPO_ROOT), "robotics_datasets", "aloha_static_screw_driver", "data", "chunk-000", "file-000.parquet"),
+)
+SCENE_XML = os.path.join(REPO_ROOT, "mujoco_menagerie", "aloha", "scene_with_screwdriver.xml")
+SPLITS_JSON = os.path.join(REPO_ROOT, "configs", "dataset_splits.json")
+OUTPUT_REPORT = os.path.join(REPO_ROOT, "configs", "baseline_benchmark_report.json")
 
 print("=" * 75)
 print("📊 PHYSICAL AI EVALUATION BENCHMARK: 15-EPISODE TESTING SPLIT")

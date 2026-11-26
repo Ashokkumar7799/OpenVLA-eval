@@ -35,8 +35,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SPLITS_JSON = os.path.join(SCRIPT_DIR, "dataset_splits.json")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SPLITS_JSON = os.path.join(REPO_ROOT, "configs", "dataset_splits.json")
 
 # Normalization bounds for ALOHA 14-DoF action space
 ACTION_MIN = np.array([

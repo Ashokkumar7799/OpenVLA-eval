@@ -10,9 +10,13 @@ import pandas as pd
 import cv2
 import mujoco
 
-SCENE_XML = r"E:\mediapipe\physical_ai_eval\mujoco_menagerie\aloha\scene_with_screwdriver.xml"
-PARQUET_FILE = r"E:\mediapipe\robotics_datasets\aloha_static_screw_driver\data\chunk-000\file-000.parquet"
-OUTPUT_VIDEO = r"E:\mediapipe\physical_ai_eval\sim_rollout_with_screwdriver.mp4"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SCENE_XML = os.path.join(REPO_ROOT, "mujoco_menagerie", "aloha", "scene_with_screwdriver.xml")
+PARQUET_FILE = os.environ.get(
+    "ALOHA_PARQUET_FILE",
+    os.path.join(os.path.dirname(REPO_ROOT), "robotics_datasets", "aloha_static_screw_driver", "data", "chunk-000", "file-000.parquet"),
+)
+OUTPUT_VIDEO = os.path.join(REPO_ROOT, "scratch", "sim_rollout_with_screwdriver.mp4")
 
 print("=" * 65)
 print("🤖 ALOHA SIMULATION VIDEO RECORDER (WITH SCREWDRIVER & CUP)")

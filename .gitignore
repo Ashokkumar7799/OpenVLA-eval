@@ -4,11 +4,14 @@ env/
 ENV/
 .venv/
 
-# Byte-compiled / cache files
+# Byte-compiled / cache / packaging files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
+build/
+dist/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/

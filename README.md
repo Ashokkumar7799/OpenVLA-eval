@@ -1,91 +1,107 @@
-# 🤖 Physical AI: Bimanual ALOHA Digital Twin & OpenVLA Evaluation Engine
+# Physical AI Evaluation & Generative Augmentation Engine
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![MuJoCo](https://img.shields.io/badge/Physics-MuJoCo%204.0.1-orange.svg)](https://mujoco.org/)
-[![OpenVLA](https://img.shields.io/badge/VLA-OpenVLA--7B-purple.svg)](https://github.com/openvla/openvla)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/)
+A modular evaluation, simulation, and action-preserving augmentation platform for bimanual robotic manipulation on **`lerobot/aloha_static_screw_driver`** (14-DoF ALOHA, 50 Hz, 4 synchronized cameras).
 
-A production-grade **Physical AI Evaluation and Simulation Layer** for bimanual robotic manipulation, built around the canonical `lerobot/aloha_static_screw_driver` dataset.
-
-This repository provides:
-1. **MuJoCo 1-to-1 Digital Twin**: Exact physics model of the DeepMind ALOHA bimanual workspace (matte black table, white reference line, blue cup with yellow foam insert, and 6-DoF yellow screwdriver).
-2. **Benchmark Engine**: Automated 15-episode evaluation harness computing **Task Success Rate** ($\ge 2\text{ cm}$ physical object lift) and joint-space L1 errors across 14 degrees of freedom.
-3. **OpenVLA-7B Colab Integration**: Self-contained GPU notebook for zero-shot evaluation and LoRA parameter-efficient fine-tuning on 30 training episodes.
+It provides:
+1. **Shared Core Package (`src/physical_ai/`)**: Single source of truth for MuJoCo Digital Twin calibration (fingertip grasp-site placement, `0.010` screwdriver torsional friction, `0.0 mm` shaft contact margin, camera FOV/color alignment), LeRobot data loading, and $\pi_{0.5}$ closed-loop inference.
+2. **Closed-Loop Digital Twin Evaluation**: Verified at **50/50 Lift** and **47/50 Cup Placement** across all 50 Ground-Truth demonstrations (`35–49` locked holdout split, plus `--ood_red` stress testing).
+3. **Action-Preserving Augmentation Pipelines (`scripts/augmentation/`)**: Both fast semantic HSV/photometric transforms and synchronized `81`-frame / `400`-frame V2V video export for diffusion pipelines.
 
 ---
 
-## 📊 Dataset Splits & Benchmarking Philosophy
+## Repository Layout
 
-| Split | Episodes | Frames (50 FPS) | Purpose |
-| :--- | :---: | :---: | :--- |
-| **Train** | 0 – 29 (30 eps) | 12,000 | LoRA fine-tuning & synthetic domain augmentation |
-| **Validation** | 30 – 34 (5 eps) | 2,000 | Hyperparameter tuning & checkpoint selection |
-| **Test (Holdout)** | 35 – 49 (15 eps) | 6,000 | Untouched holdout evaluation benchmark |
-
-### What is "Task Success Rate"?
-In physical robotics, low neural MSE does not guarantee task completion. Our MuJoCo engine verifies physical interaction:
-$$\text{Task Success} = \begin{cases} \text{True} & \text{if screwdriver is physically grasped and lifted } \ge 2.0\text{ cm} \\ \text{False} & \text{otherwise} \end{cases}$$
+```text
+physical_ai_eval/
+├── pyproject.toml                       # Installable package metadata (`pip install -e .`)
+├── requirements.txt                     # Active Pi0.5, LeRobot, and MuJoCo dependencies
+├── .gitignore
+│
+├── configs/
+│   ├── dataset_splits.json              # Canonical 30 Train (0-29) / 5 Val (30-34) / 15 Test (35-49)
+│   └── baseline_benchmark_report.json   # Reference zero-shot vs human benchmark report
+│
+├── deploy/
+│   └── setup_pi05_colab.sh              # One-click Colab / Cloud GPU setup script
+│
+├── docs/
+│   └── PIPELINE_DOCUMENTATION.md        # Detailed mathematical & physics calibration reference
+│
+├── src/physical_ai/                     # Core reusable library (cross-platform paths, zero hardcoding)
+│   ├── __init__.py
+│   ├── paths.py                         # Repo, XML, config & ALOHA_DATASET_DIR resolution
+│   ├── data.py                          # LeRobot dataset, split & video I/O helpers
+│   ├── sim_twin.py                      # Gripper scaling, grasp sites, contact & visual alignment
+│   └── pi05_policy.py                   # Pi0.5 training launcher & 50 Hz closed-loop evaluator
+│
+├── scripts/                             # Runnable CLI entrypoints
+│   ├── pi05_runner.py                   # Train / evaluate Pi0.5 closed-loop in MuJoCo
+│   ├── debug_pi05_pipeline.py           # 4-stage diagnostics (GT physics, real L1, uint8 vs float32, API)
+│   ├── record_sim_dataset.py            # Record 50 Hz 4-camera LeRobot v3.0 datasets in MuJoCo
+│   ├── augmentation/
+│   │   ├── generate_aloha_augmented_dataset.py  # Semantic color/lighting profile augmentation
+│   │   └── export_aloha_v2v_clips.py            # Synchronized 4-cam clip exporter for V2V diffusion
+│   └── sim/
+│       ├── create_splits.py             # Regenerate configs/dataset_splits.json
+│       ├── generate_cup.py              # Procedural tapered cup mesh generator
+│       └── live_viewer.py               # Interactive 3D desktop MuJoCo replay viewer
+│
+├── mujoco_menagerie/                    # DeepMind ALOHA MJCF XML, meshes & scene_with_screwdriver.xml
+└── legacy/openvla/                      # Archived OpenVLA-7B v1 notebooks, LoRA training & scripts
+```
 
 ---
 
-## 🚀 Quickstart: Local MuJoCo Interactive Simulation
+## Quickstart
 
-### 1. Installation
+### 1. Local Setup (Windows / Linux)
 ```bash
-git clone https://github.com/<your-username>/aloha-openvla-eval.git
-cd aloha-openvla-eval
-
 python -m venv venv
-venv\Scripts\activate  # On Linux/Mac: source venv/bin/activate
+# Windows: venv\Scripts\activate
+# Linux:   source venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
+```
+Optional environment overrides for custom storage locations:
+```bash
+export ALOHA_DATASET_DIR=/path/to/aloha_static_screw_driver
+export ALOHA_AUGMENTED_DIR=/path/to/augmented_dataset
 ```
 
-### 2. Interactive 3D Viewer
-Run the native 3D MuJoCo desktop viewer to inspect Episode 0 playback with calibrated Dynamixel grippers:
+### 2. Cloud / Google Colab (GPU)
 ```bash
-python live_viewer.py
+git clone https://github.com/Ashokkumar7799/OpenVLA-eval.git
+cd OpenVLA-eval
+bash deploy/setup_pi05_colab.sh
 ```
-* **Left Click + Drag**: Orbit / Rotate camera
-* **Right Click + Drag**: Zoom in / out
-* **Middle Click**: Pan camera
-* **Spacebar**: Pause / Resume
-
-### 3. Automated 15-Episode Test Evaluation
-```bash
-python evaluate_baseline.py
-```
-Outputs `baseline_benchmark_report.json` with per-episode lift metrics and joint-space L1 errors.
 
 ---
 
-## ⚡ Google Colab GPU Workflow (OpenVLA-7B)
+## Key Commands
 
-1. Open `openvla_aloha_eval_and_finetune.ipynb` in [Google Colab](https://colab.research.google.com/).
-2. Select runtime: **L4 GPU** or **A100 GPU**.
-3. Run all cells:
-   * Automatically downloads `lerobot/aloha_static_screw_driver`.
-   * Loads `openvla/openvla-7b` in 4-bit / bfloat16.
-   * Runs zero-shot evaluation on the 15 test episodes.
-   * Fine-tunes with LoRA (Rank 32) on the 30 training episodes.
-   * Renders in-browser simulation videos of the robot manipulating the screwdriver.
-
----
-
-## 📁 Repository Structure
-
-```
-├── mujoco_menagerie/aloha/
-│   ├── scene_with_screwdriver.xml   # Digital twin scene (arms, table, cup, screwdriver)
-│   ├── aloha.xml                    # ALOHA 14-DoF kinematic definition
-│   └── assets/                      # STL meshes & textures
-├── dataset_splits.json              # Canonical 30 Train / 5 Val / 15 Test splits
-├── create_splits.py                 # Split generator script
-├── live_viewer.py                   # Real-time interactive 3D MuJoCo viewer
-├── evaluate_baseline.py             # 15-episode test evaluation engine
-├── baseline_benchmark_report.json   # Benchmark scorecard & metrics
-├── openvla_aloha_eval_and_finetune.ipynb  # Google Colab GPU notebook
-├── colab_runner.py                  # Headless Cloud/Colab runner
-├── requirements.txt                 # Dependencies
-└── README.md                        # Documentation
-```
-
+- **Verify Physics & Image Scaling Diagnostics (4 Tests):**
+  ```bash
+  python scripts/debug_pi05_pipeline.py --episode 35
+  ```
+- **Evaluate $\pi_{0.5}$ Closed-Loop in MuJoCo (Standard & OOD Red):**
+  ```bash
+  python scripts/pi05_runner.py --mode eval --episodes 35 36 37 --save_video
+  python scripts/pi05_runner.py --mode eval --episodes 35 36 37 --ood_red --save_video
+  ```
+- **Train $\pi_{0.5}$ via LeRobot (24 GB L4 / A100):**
+  ```bash
+  python scripts/pi05_runner.py --mode train --batch_size 8 --steps 5000
+  ```
+- **Record 4-Camera MuJoCo LeRobot Dataset + Side-by-Side Comparison:**
+  ```bash
+  python scripts/record_sim_dataset.py --episodes 1 --output_dir ./sim_aloha_ep1 --save_preview
+  ```
+- **Interactive 3D Desktop Viewer (Local GUI):**
+  ```bash
+  python scripts/sim/live_viewer.py --episode 1
+  ```
+- **Generate Action-Preserving Augmentations / V2V Diffusion Clips:**
+  ```bash
+  python scripts/augmentation/generate_aloha_augmented_dataset.py --episodes 0 1 2
+  python scripts/augmentation/export_aloha_v2v_clips.py --mode both
+  ```

@@ -5,53 +5,49 @@ ALOHA MuJoCo Digital Twin Dataset Recorder
 Replays Ground-Truth trajectories inside the calibrated MuJoCo Digital Twin
 at 50 Hz (10 substeps * 0.002s) and records a synchronized 4-camera LeRobot
 simulation dataset (MP4 camera streams + Parquet states/actions + previews).
-
-Reuses camera/gripper calibration helpers directly from pi05_runner.py.
 """
 
-import os
-import sys
-if sys.platform != "win32" and "MUJOCO_GL" not in os.environ and "DISPLAY" not in os.environ:
-    os.environ["MUJOCO_GL"] = "egl"
-
+import argparse
 import glob
 import json
+import os
+import sys
 import time
-import argparse
+from pathlib import Path
+import cv2
 import numpy as np
 import pandas as pd
-import cv2
 from tqdm import tqdm
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = str(REPO_ROOT / "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
 
-from pi05_runner import (
-    LOCAL_DATASET_DIR,
-    SCENE_XML,
+from physical_ai.sim_twin import ensure_mujoco_gl
+
+ensure_mujoco_gl()
+
+from physical_ai.data import load_aloha_dataset, make_4cam_mosaic, write_video_mp4
+from physical_ai.paths import SCENE_XML
+from physical_ai.sim_twin import (
+    CAM_MAP,
+    DEFAULT_TASK,
     apply_visual_alignment,
     calibrate_screwdriver_contact,
     compute_episode_grasp_point,
+    evaluate_episode_outcome,
     map_action_to_ctrl,
-    mujoco_to_gripper_rad,
-    scale_gripper,
+    read_aloha_state_14,
+    reset_aloha_episode,
 )
-
-CAM_MAP = {
-    "cam_high": "overhead_cam",
-    "cam_low": "worms_eye_cam",
-    "cam_left_wrist": "wrist_cam_left",
-    "cam_right_wrist": "wrist_cam_right",
-}
-DEFAULT_TASK = "Pick up the screwdriver with the right arm, hand it over to the left arm then place it into the cup."
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Record MuJoCo Digital Twin LeRobot Dataset")
     parser.add_argument("--episodes", type=int, nargs="+", default=[1],
                         help="Source trajectory episode IDs to record in MuJoCo (default: [1])")
-    parser.add_argument("--output_dir", type=str, default=os.path.join(SCRIPT_DIR, "sim_aloha_dataset"),
+    parser.add_argument("--output_dir", type=str, default=str(REPO_ROOT / "sim_aloha_dataset"),
                         help="Output directory for generated dataset & previews")
     parser.add_argument("--shadow_size", type=int, default=1024,
                         help="MuJoCo shadow map resolution (default: 1024)")
@@ -63,29 +59,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_source_dataset(hf_token=None):
-    """Loads source dataset parquets (preferring local dataset when present)."""
-    if os.path.exists(LOCAL_DATASET_DIR):
-        repo_dir = LOCAL_DATASET_DIR
-    else:
-        from huggingface_hub import snapshot_download
-        token = hf_token or os.environ.get("HF_TOKEN")
-        repo_dir = snapshot_download(
-            "lerobot/aloha_static_screw_driver",
-            repo_type="dataset",
-            allow_patterns=["*.parquet", "meta/**", "videos/**"],
-            token=token,
-        )
-    parquet_files = sorted(
-        p for p in glob.glob(os.path.join(repo_dir, "**", "*.parquet"), recursive=True)
-        if "meta" not in p
-    )
-    df = pd.concat([pd.read_parquet(p) for p in parquet_files], ignore_index=True)
-    return df, repo_dir
-
-
 def open_real_video_caps(repo_dir):
-    """Opens cv2.VideoCapture handles for real 4-camera comparison previews."""
     caps = {}
     for cam_key in CAM_MAP:
         matches = sorted(glob.glob(os.path.join(repo_dir, "videos", f"*{cam_key}*", "**", "*.mp4"), recursive=True))
@@ -94,34 +68,12 @@ def open_real_video_caps(repo_dir):
     return caps
 
 
-def make_mosaic(cam_frames_rgb, tile_w=320, tile_h=240):
-    """Builds 2x2 RGB mosaic ordered [cam_high, cam_low; cam_left_wrist, cam_right_wrist]."""
-    tiles = [
-        cv2.resize(cam_frames_rgb[k], (tile_w, tile_h))
-        for k in ("cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist")
-    ]
-    return np.vstack([np.hstack([tiles[0], tiles[1]]), np.hstack([tiles[2], tiles[3]])])
-
-
-def write_video_mp4(path, frames_rgb, fps=50.0):
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    try:
-        import mediapy as media
-        media.write_video(path, frames_rgb, fps=int(fps))
-    except Exception:
-        h, w = frames_rgb[0].shape[:2]
-        vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w, h))
-        for fr in frames_rgb:
-            vw.write(cv2.cvtColor(fr, cv2.COLOR_RGB2BGR))
-        vw.release()
-
-
 def main():
     args = parse_args()
     import mujoco
 
     os.makedirs(args.output_dir, exist_ok=True)
-    df, repo_dir = load_source_dataset(args.hf_token)
+    df, repo_dir = load_aloha_dataset(hf_token=args.hf_token, need_videos=bool(args.save_preview))
 
     model = mujoco.MjModel.from_xml_path(SCENE_XML)
     data = mujoco.MjData(model)
@@ -158,17 +110,7 @@ def main():
             src_abs_start = int(ep_df["index"].iloc[0])
             gx, gy = compute_episode_grasp_point(model, data, gt_actions)
 
-            mujoco.mj_resetData(model, data)
-            init = gt_states[0]
-            data.qpos[0:6] = init[0:6]
-            data.qpos[6] = data.qpos[7] = scale_gripper(init[6])
-            data.qpos[8:14] = init[7:13]
-            data.qpos[14] = data.qpos[15] = scale_gripper(init[13])
-            data.ctrl[:14] = map_action_to_ctrl(init)
-            if screw_jid != -1:
-                qadr = model.jnt_qposadr[screw_jid]
-                data.qpos[qadr:qadr + 7] = [gx, gy, 0.015, 0.7071, 0.0, 0.7071, 0.0]
-            mujoco.mj_forward(model, data)
+            reset_aloha_episode(model, data, gt_states[0], gx, gy, screw_jid)
 
             init_z = float(data.xpos[screw_bid][2]) if screw_bid != -1 else 0.0
             max_z = init_z
@@ -185,7 +127,6 @@ def main():
             n_frames = len(gt_actions)
             pbar = tqdm(range(n_frames), desc=f"🎬 Recording Sim Ep {src_ep_id}", unit="frame")
             for f_idx in pbar:
-                # 1. Record observation BEFORE applying action[f_idx] (standard MDP transition)
                 frame_cams = {}
                 for cam_key, mj_cam in CAM_MAP.items():
                     renderer.update_scene(data, camera=mj_cam)
@@ -193,12 +134,7 @@ def main():
                     frame_cams[cam_key] = rgb
                     cam_buffers[cam_key].append(rgb)
 
-                sim_state = np.zeros(14, dtype=np.float32)
-                sim_state[0:6] = data.qpos[0:6]
-                sim_state[6] = mujoco_to_gripper_rad(data.qpos[6])
-                sim_state[7:13] = data.qpos[8:14]
-                sim_state[13] = mujoco_to_gripper_rad(data.qpos[14])
-
+                sim_state = read_aloha_state_14(data)
                 act = gt_actions[f_idx].astype(np.float32)
                 all_rows.append({
                     "observation.state": sim_state.tolist(),
@@ -214,7 +150,7 @@ def main():
                 global_index += 1
 
                 if args.save_preview:
-                    sim_mos = make_mosaic(frame_cams)
+                    sim_mos = make_4cam_mosaic(frame_cams)
                     sim_mosaics.append(sim_mos)
                     if len(real_caps) == len(CAM_MAP):
                         real_cams = {}
@@ -226,13 +162,11 @@ def main():
                                 break
                             real_cams[cam_key] = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
                         if ok:
-                            real_mos = make_mosaic(real_cams)
+                            real_mos = make_4cam_mosaic(real_cams)
                             real_mosaics.append(real_mos)
                             if f_idx in keyframe_indices:
-                                pair = np.hstack([real_mos, sim_mos])
-                                keyframe_strips.append((f_idx, pair))
+                                keyframe_strips.append((f_idx, np.hstack([real_mos, sim_mos])))
 
-                # 2. Advance MuJoCo 50 Hz physics (10 substeps * 0.002s = 20ms)
                 data.ctrl[:14] = map_action_to_ctrl(act)
                 for _ in range(10):
                     mujoco.mj_step(model, data)
@@ -241,11 +175,9 @@ def main():
                     max_z = max(max_z, float(data.xpos[screw_bid][2]))
 
             elapsed = time.time() - t0
-            lift_cm = (max_z - init_z) * 100.0
-            final_pos = data.xpos[screw_bid] if screw_bid != -1 else np.zeros(3)
-            cup_pos = model.body_pos[cup_bid] if cup_bid != -1 else np.array([-0.12, 0.19, 0.001])
-            cup_dist_cm = float(np.linalg.norm(final_pos[:2] - cup_pos[:2]) * 100.0)
-            cup_success = bool(cup_dist_cm < 10.0 and final_pos[2] < 0.19)
+            lift_cm, lift_ok, cup_dist_cm, cup_ok = evaluate_episode_outcome(
+                model, data, init_z, max_z, screw_bid, cup_bid
+            )
 
             summary = {
                 "sim_episode_index": int(new_ep_idx),
@@ -253,13 +185,13 @@ def main():
                 "num_frames": int(n_frames),
                 "grasp_origin_xy": [round(gx, 4), round(gy, 4)],
                 "lift_height_cm": round(float(lift_cm), 2),
-                "lift_success": bool(lift_cm >= 5.0),
+                "lift_success": lift_ok,
                 "cup_dist_cm": round(cup_dist_cm, 2),
-                "cup_success": cup_success,
+                "cup_success": cup_ok,
                 "record_time_sec": round(elapsed, 2),
             }
             episode_summaries.append(summary)
-            print(f"✅ Ep {src_ep_id}: Lift={lift_cm:.2f}cm ({summary['lift_success']}) | Cup={cup_dist_cm:.2f}cm ({cup_success}) | {elapsed:.1f}s")
+            print(f"✅ Ep {src_ep_id}: Lift={lift_cm:.2f}cm ({lift_ok}) | Cup={cup_dist_cm:.2f}cm ({cup_ok}) | {elapsed:.1f}s")
 
             if args.save_preview:
                 prev_dir = os.path.join(args.output_dir, "previews")
@@ -282,7 +214,6 @@ def main():
         for cap in real_caps.values():
             cap.release()
 
-    # Save LeRobot-style Parquet + Videos + Metadata
     data_out = os.path.join(args.output_dir, "data", "chunk-000", "file-000.parquet")
     os.makedirs(os.path.dirname(data_out), exist_ok=True)
     pd.DataFrame(all_rows).to_parquet(data_out, index=False)
@@ -293,8 +224,7 @@ def main():
 
     meta_dir = os.path.join(args.output_dir, "meta")
     os.makedirs(meta_dir, exist_ok=True)
-    tasks_df = pd.DataFrame({"task_index": [0]}, index=[DEFAULT_TASK])
-    tasks_df.to_parquet(os.path.join(meta_dir, "tasks.parquet"))
+    pd.DataFrame({"task_index": [0]}, index=[DEFAULT_TASK]).to_parquet(os.path.join(meta_dir, "tasks.parquet"))
 
     info = {
         "codebase_version": "v3.0",
@@ -306,7 +236,7 @@ def main():
         "visual_align": bool(not args.no_visual_align),
         "episode_summaries": episode_summaries,
     }
-    with open(os.path.join(meta_dir, "info.json"), "w") as f:
+    with open(os.path.join(meta_dir, "info.json"), "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2)
 
     print(f"\n📦 Simulation dataset saved to: {args.output_dir}")
