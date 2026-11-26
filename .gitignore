@@ -24,6 +24,7 @@ augmented_dataset/
 poc_assets/
 openvla_aloha_output/
 pi05_eval_output/
+sim_aloha*/
 
 # Test scratch images
 test_*.jpg

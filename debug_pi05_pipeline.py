@@ -101,6 +101,7 @@ def main():
     import mujoco
     from pi05_runner import (
         apply_visual_alignment,
+        calibrate_screwdriver_contact,
         compute_episode_grasp_point,
         map_action_to_ctrl,
         mujoco_to_gripper_rad,
@@ -126,6 +127,7 @@ def main():
     print("-" * 78)
     model = mujoco.MjModel.from_xml_path(SCENE_XML)
     data = mujoco.MjData(model)
+    calibrate_screwdriver_contact(model)
     gx, gy = compute_episode_grasp_point(model, data, gt_actions)
     screw_jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "screwdriver_joint")
     screw_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "screwdriver")
